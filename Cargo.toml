@@ -1,0 +1,10 @@
+[package]
+name = "rfos"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = "0.25.6"
+log = "0.4.27"
+stderrlog = "0.6.0"
+crossbeam-channel = "0.5.15"
