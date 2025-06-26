@@ -1,83 +1,130 @@
 use std::thread;
-use std::sync::{Mutex, RwLock, Condvar, Arc};
+use std::sync::Arc;
 use image::Rgba;
 use crossbeam_channel::{bounded, Receiver, RecvError};
 
 use crate::math::*;
-use crate::ring_buffer::*;
 use crate::texture::*;
 use crate::scene::*;
 use crate::render::*;
 
-pub struct BlockingQueue<T> {
-    queue: Mutex<RingBuffer<T>>,
-    cond: Condvar
+pub struct FragmentProcessor {
+    pub scene: Option<Arc<Scene>>,
+    pub config: RenderConfig,
+    pub color_buffer: Texture,
+    pub zbuffer: DepthBuffer,
+    pub camera_index: usize,
+    pub receiver: Receiver<RasterPrimitive>,
 }
 
-impl<T: Copy> BlockingQueue<T> {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            queue: Mutex::new(RingBuffer::<T>::new(capacity)),
-            cond: Condvar::new()
+impl FragmentProcessor {
+    pub fn new(scene: Option<Arc<Scene>>, config: RenderConfig, camera_index: usize,
+        receiver: Receiver<RasterPrimitive>) -> Self {
+        if scene.is_none() {
+            log::warn!("no scene provided for fragment processor; cannot render filled triangled");
+        }
+        let (w, h) = (config.image_width, config.image_height);
+        let color_buffer = Texture::new(w, h);
+        let zbuffer = DepthBuffer::new(w, h);
+        FragmentProcessor {
+            scene,
+            config,
+            color_buffer,
+            zbuffer,
+            camera_index,
+            receiver
         }
     }
 
-    pub fn enqueue(&self, value: T) {
-        let mut q = self.queue.lock().unwrap();
-        while q.is_full() {
-            q = self.cond.wait(q).unwrap();
+    pub fn init(&mut self) {
+        self.color_buffer.urange = vec2![-1.0, 1.0];
+        self.color_buffer.vrange = vec2![-1.0, 1.0];
+        self.color_buffer.fill(self.config.background_color);
+        self.zbuffer.depth_range = vec2![0.0, 1.0];
+        self.zbuffer.fill(1.0);
+    }
+
+    fn process_point(&mut self, frag: &Fragment) {
+        let pos = frag.pixel_pos.elems.map(|x| f32::round(x) as i32);
+        let iswithin = self.color_buffer.is_within(pos[0], pos[1]);
+        let z = frag.screen_pos[2];
+        if iswithin && z < self.zbuffer.get(pos[0], pos[1]) {
+            let color = rgba_from_vec3(frag.color);
+            self.color_buffer.set_pixel(pos[0] as u32, pos[1] as u32, color);
+            self.zbuffer.set(pos[0], pos[1], frag.screen_pos[2]);
         }
-        _ = q.push(value).unwrap();
-        self.cond.notify_one();
     }
 
-    pub fn dequeue(&self) -> T {
-        let mut q = self.queue.lock().unwrap();
-        while q.is_empty() {
-            q = self.cond.wait(q).unwrap();
+    fn process_line(&mut self, start: &Fragment, end: &Fragment) {
+        let startpos = start.pixel_pos.elems.map(|x| f32::round(x) as i32);
+        let endpos = end.pixel_pos.elems.map(|x| f32::round(x) as i32);
+        let color = rgba_from_vec3(start.color);
+        if i32::abs(endpos[1] - startpos[1]) < i32::abs(endpos[0] - startpos[0]) {
+            if startpos[0] > endpos[0] {
+                render_line_low(&mut self.color_buffer, &mut self.zbuffer, &end, endpos, &start,
+                    startpos, color);
+            } else {
+                render_line_low(&mut self.color_buffer, &mut self.zbuffer, &start, startpos,
+                    &end, endpos, color);
+            }
+        } else {
+            if startpos[1] > endpos[1] {
+                render_line_high(&mut self.color_buffer, &mut self.zbuffer, &end, endpos,
+                    &start, startpos, color);
+            } else {
+                render_line_high(&mut self.color_buffer, &mut self.zbuffer, &start, startpos,
+                    &end, endpos, color);
+            }
         }
-        let ret = q.pop().unwrap();
-        self.cond.notify_one();
-        ret
     }
 
-    pub fn len(&self) -> usize {
-        self.queue.lock().unwrap().len()
+    fn process_tri(&mut self, tri: &FragmentTriangle) {
+        let scene = self.scene.clone();
+        if scene.is_none() {return;}
+        let (min, max) = tri.pixel_extents();
+        let scene = scene.unwrap();
+        let camera = scene.get_camera(self.camera_index);
+        let material = scene.get_material(tri.material_index);
+        for y in min[1]..=max[1] {
+            for x in min[0]..=max[0] {
+                if !self.color_buffer.is_within(x, y) { continue; }
+                let p = vec2![x as f32 + 0.5, y as f32 + 0.5];
+                let mut bc = vec3! [
+                    tri.edge_function(1, 2, p[0], p[1]),
+                    tri.edge_function(2, 0, p[0], p[1]),
+                    tri.edge_function(0, 1, p[0], p[1])
+                ];
+                if bc[0] >= 0.0 && bc[1] >= 0.0 && bc[2] >= 0.0 {
+                    bc /= tri.area;
+                    let frag = tri.weighted_sum(bc);
+                    if frag.screen_pos[2] < self.zbuffer.get(x, y) {
+                        let color = rgba_from_vec3(phong_shade(scene.clone(), &frag, material,
+                            camera));
+                        self.color_buffer.set_pixel(x as u32, y as u32, color);
+                        self.zbuffer.set(x, y, frag.screen_pos[2]);
+                    }
+                }
+            }
+        }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+    pub fn run(&mut self) {
+        loop {
+            match self.receiver.recv() {
+                Err(RecvError) => break,
+                Ok(RasterPrimitive::Point(frag)) => self.process_point(&frag),
+                Ok(RasterPrimitive::Line(start, end)) => self.process_line(&start, &end),
+                Ok(RasterPrimitive::Triangle(tri)) => self.process_tri(&tri),
+            }
+        }
     }
 }
-
-// struct FrameBuffer {
-//    pub color_buffer: Texture,
-//    pub zbuffer: DepthBuffer,
-// }
-//
-// impl FrameBuffer {
-//     pub fn new(width: u32, height: u32) -> Self {
-//         FrameBuffer {
-//             color_buffer: Texture::new(width, height),
-//             zbuffer: DepthBuffer::new(width, height)
-//         }
-//     }
-//
-//     pub fn is_within(&self, x: i32, y: i32, z: f32) -> bool {
-//         self.color_buffer.is_within(x, y) && z < self.zbuffer.get(x, y)
-//     }
-//
-//     pub fn set(&mut self, x: i32, y: i32, z: f32, color: Rgba<u8>) {
-//         self.color_buffer.set_pixel(x as u32, y as u32, color);
-//         self.zbuffer.set(x, y, z);
-//     }
-// }
 
 pub struct Rasterizer2 {
     scene: Arc<Scene>,
     config: RenderConfig,
-    color_buffer: Arc<RwLock<Texture>>,
-    zbuffer: Arc<RwLock<DepthBuffer>>,
+    color_buffer: Texture,
+    zbuffer: DepthBuffer,
     camera_index: usize,
     model_index: usize,
     mesh_index: usize,
@@ -102,8 +149,8 @@ impl Rasterizer2 {
         Rasterizer2 {
             scene,
             config: config.clone(),
-            color_buffer: Arc::new(RwLock::new(Texture::new(w, h))),
-            zbuffer: Arc::new(RwLock::new(DepthBuffer::new(w, h))),
+            color_buffer: Texture::new(w, h),
+            zbuffer: DepthBuffer::new(w, h),
             camera_index: INVALID_INDEX,
             model_index: INVALID_INDEX,
             mesh_index: INVALID_INDEX,
@@ -120,50 +167,63 @@ impl Rasterizer2 {
     }
 
     fn frag_pixel_pos(&self, screen_pos: Vec4) -> Vec2 {
-        let color_buffer = self.color_buffer.read().unwrap();
-        let tmin = color_buffer.urange[0];
-        let tmax = color_buffer.urange[1];
+        let tminx = self.color_buffer.urange[0];
+        let tmaxx = self.color_buffer.urange[1];
+        let tminy = self.color_buffer.vrange[0];
+        let tmaxy = self.color_buffer.vrange[1];
         vec2![
-            lerp(0.0, self.color_buffer_width, tmin, tmax, screen_pos[0]),
-            lerp(self.color_buffer_height, 0.0, tmin, tmax, screen_pos[1])
+            lerp(0.0, self.color_buffer_width, tminx, tmaxx, screen_pos[0]),
+            lerp(self.color_buffer_height, 0.0, tminy, tmaxy, screen_pos[1])
         ]
     }
 
-    pub fn render_frame(&mut self, cam: &Camera) -> &Arc<RwLock<Texture>> {
-        self.camera_index = cam.index;
-        self.view_matrix = cam.view_matrix();
-        self.proj_matrix = cam.perspective_matrix();
-        self.view_proj_matrix =  self.proj_matrix * self.view_matrix;
-       
-        let mut color_buffer = self.color_buffer.write().unwrap();
-        color_buffer.urange = vec2![-1.0, 1.0];
-        color_buffer.vrange = vec2![-1.0, 1.0];
-        color_buffer.fill(self.config.background_color);
-        let mut zbuffer = self.zbuffer.write().unwrap();
-        zbuffer.depth_range = vec2![0.0, 1.0];
-        let maxdepth = zbuffer.depth_range[1];
-        zbuffer.fill(maxdepth);
-        drop(color_buffer);
-        drop(zbuffer);
-
-        let worker_count: usize = 2;
-        let mut rasterizer_handles = Vec::<thread::JoinHandle<()>>::new();
-        const PRIMITIVE_QUEUE_CAPACITY: usize = 1024;
-        let (prim_sender, prim_receiver) = bounded(PRIMITIVE_QUEUE_CAPACITY);
-        for _i in 0..worker_count {
-            let scene = self.scene.clone();
-            let color_buffer = self.color_buffer.clone();
-            let zbuffer = self.zbuffer.clone();
-            let worker_receiver = prim_receiver.clone();
-            let cam_index = cam.index;
-            rasterizer_handles.push(thread::spawn(move || {
-                rasterizer_worker(scene, cam_index, color_buffer, zbuffer, worker_receiver); 
-            }));
+    fn min_depth_color(&self, fragprocs: &Vec<FragmentProcessor>, x: i32, y: i32)
+        -> (f32, Rgba<u8>) {
+        let mut min_depth = f32::MAX;
+        let mut min_depth_color = rgba(0, 0, 0, 255);
+        for proc in fragprocs {
+            let depth = proc.zbuffer.get(x, y);
+            if depth < min_depth {
+                min_depth = depth;
+                min_depth_color = proc.color_buffer.get_pixel(x as u32, y as u32);
+            }
         }
+        (min_depth, min_depth_color)
+    }
 
+    pub fn render_frame(&mut self, camera_index: usize) -> &Texture {
+        let camera = self.scene.get_camera(camera_index);
+        self.camera_index = camera_index;
+        self.view_matrix = camera.view_matrix();
+        self.proj_matrix = camera.perspective_matrix();
+        self.view_proj_matrix = self.proj_matrix * self.view_matrix;
+
+        self.color_buffer.urange = vec2![-1.0, 1.0];
+        self.color_buffer.vrange = vec2![-1.0, 1.0];
+        self.color_buffer.fill(self.config.background_color);
+        self.zbuffer.depth_range = vec2![0.0, 1.0];
+        self.zbuffer.fill(1.0);
+
+        const PRIM_QUEUE_CAP: usize = 1024;
+        let (prim_sender, prim_receiver) = bounded(PRIM_QUEUE_CAP);
         let rasconfig = self.config.rasterizer_config.unwrap();
-        let wireframe_color = rgba_to_vec3(rasconfig.wireframe_color);
 
+        let fragproc_handles: Vec<thread::JoinHandle<FragmentProcessor>> = 
+            (0..rasconfig.fragment_processors).map(|_| {
+            let scene = self.scene.clone();
+            let config = self.config.clone();
+            let camera_index = self.camera_index;
+            let receiver = prim_receiver.clone();
+            thread::spawn(move || {
+                let mut fragproc = FragmentProcessor::new(Some(scene), config, camera_index,
+                    receiver);
+                fragproc.init();
+                fragproc.run();
+                fragproc
+            })
+        }).collect();
+
+        let wireframe_color = rgba_to_vec3(rasconfig.wireframe_color);
         let mut fragtri = FragmentTriangle::new();
         for model in &self.scene.models {
             self.model_index = model.index;
@@ -180,13 +240,14 @@ impl Rasterizer2 {
                     let world_pos = Vec3::transform_point(*vertex, model.model_matrix);
                     let mut screen_pos = self.model_view_proj_matrix * vertex.to_point();
                     screen_pos /= screen_pos[3];
-                    let fpixpos = self.frag_pixel_pos(screen_pos);
+                    let pixel_pos = self.frag_pixel_pos(screen_pos);
+                    println!("{}", pixel_pos);
                     _ = prim_sender.send(RasterPrimitive::Point(Fragment {
                         world_pos,
                         screen_pos,
                         normal: Vec3::new(),
                         uv: Vec3::new(),
-                        pixel_pos: fpixpos,
+                        pixel_pos,
                         color: wireframe_color
                     })).unwrap();
                 }
@@ -198,7 +259,7 @@ impl Rasterizer2 {
                     if rasconfig.backface_culling {
                         let mut v = mesh.vertices[face[0].vertex];
                         v = Vec3::transform_point(v, model.model_matrix);
-                        if Vec3::dot(v - cam.pos, face_normal) >= 0.0 {
+                        if Vec3::dot(v - camera.pos, face_normal) >= 0.0 {
                             continue;
                         }
                     }
@@ -231,7 +292,7 @@ impl Rasterizer2 {
                         if self.config.shading_model == ShadingModel::None {
                             frag.color = material.diffuse_color;
                         } else {
-                            frag.color = phong_shade(self.scene.clone(), &frag, material, cam);
+                            frag.color = phong_shade(self.scene.clone(), &frag, material, camera);
                         }
                         fragtri.centroid.world_pos += frag.world_pos;
                         fragtri.centroid.uv += frag.uv;
@@ -247,7 +308,7 @@ impl Rasterizer2 {
                         fragtri.centroid.color = material.diffuse_color;
                     } else {
                         fragtri.centroid.color = phong_shade(self.scene.clone(),
-                            &fragtri.centroid, material, cam);
+                            &fragtri.centroid, material, camera);
                     }
 
                     if self.config.render_mode == RenderMode::Filled {
@@ -314,99 +375,25 @@ impl Rasterizer2 {
             }
         }
         drop(prim_sender);
-        for handle in rasterizer_handles {
-            _ = handle.join().unwrap();
+        let fragprocs: Vec<FragmentProcessor> = fragproc_handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        let (w, h) = (self.config.image_width as i32, self.config.image_height as i32);
+        for y in 0..h {
+            for x in 0..w {
+                let (z, color) = self.min_depth_color(&fragprocs, x, y);
+                self.zbuffer.set(x, y, z);
+                self.color_buffer.set_pixel(x as u32, y as u32, color);
+            }
         }
         &self.color_buffer
     }
 }
 
-fn rasterizer_worker(
-    scene: Arc<Scene>,
-    camera_index: usize,
-    color_buffer: Arc<RwLock<Texture>>,
-    zbuffer: Arc<RwLock<DepthBuffer>>,
-    receiver: Receiver<RasterPrimitive>)
-{
-    let mut points: u64 = 0;
-    let mut lines: u64 = 0;
-    let mut tris: u64 = 0;
-    loop {
-        match receiver.recv() {
-            Err(RecvError) => break,
-            Ok(RasterPrimitive::Point(frag)) => {
-                points += 1;
-                let pos = frag.pixel_pos.elems.map(|x| f32::round(x) as i32);
-                let cbuf = color_buffer.clone();
-                let mut cb = cbuf.write().unwrap();
-                let mut zb = zbuffer.write().unwrap();
-                if cb.is_within(pos[0], pos[1]) && frag.screen_pos[2] < zb.get(pos[0], pos[1]) {
-                    cb.set_pixel(pos[0] as u32, pos[1] as u32, rgba_from_vec3(frag.color));
-                    zb.set(pos[0], pos[1], frag.screen_pos[2]);
-                }
-            },
-            Ok(RasterPrimitive::Line(start, end)) => {
-                lines += 1;
-                let startpos = start.pixel_pos.elems.map(|x| f32::round(x) as i32);
-                let endpos = end.pixel_pos.elems.map(|x| f32::round(x) as i32);
-                let color = rgba_from_vec3(start.color);
-                let cb = color_buffer.clone();
-                let zb = zbuffer.clone();
-                if i32::abs(endpos[1] - startpos[1]) < i32::abs(endpos[0] - startpos[0]) {
-                    if startpos[0] > endpos[0] {
-                        render_line_low(cb, zb, &end, endpos, &start, startpos, color);
-                    } else {
-                        render_line_low(cb, zb, &start, startpos, &end, endpos, color);
-                    }
-                } else {
-                    if startpos[1] > endpos[1] {
-                        render_line_high(cb, zb, &end, endpos, &start, startpos, color);
-                    } else {
-                        render_line_high(cb, zb, &start, startpos, &end, endpos, color);
-                    }
-                }
-            },
-            Ok(RasterPrimitive::Triangle(fragtri)) => {
-                tris += 1;
-                let (min, max) = fragtri.pixel_extents();
-                let camera = scene.get_camera(camera_index);
-                let material = scene.get_material(fragtri.material_index);
-                let mut cb = color_buffer.write().unwrap();
-                let mut zb = zbuffer.write().unwrap();
-                for y in min[1]..=max[1] {
-                    for x in min[0]..=max[0] {
-                        if !cb.is_within(x, y) { continue; }
-                        let p = vec2![x as f32 + 0.5, y as f32 + 0.5];
-                        let mut bc = vec3! [
-                            fragtri.edge_function(1, 2, p[0], p[1]),
-                            fragtri.edge_function(2, 0, p[0], p[1]),
-                            fragtri.edge_function(0, 1, p[0], p[1])
-                        ];
-                        if bc[0] >= 0.0 && bc[1] >= 0.0 && bc[2] >= 0.0 {
-                            bc /= fragtri.area;
-                            let frag = fragtri.weighted_sum(bc);
-                            if frag.screen_pos[2] < zb.get(x, y) {
-                                let color = phong_shade(
-                                    scene.clone(),
-                                    &frag,
-                                    material,
-                                    camera
-                                );
-                                cb.set_pixel(x as u32, y as u32, rgba_from_vec3(color));
-                                zb.set(x, y, frag.screen_pos[2]);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    println!("points: {}\tlines: {}\ttris: {}", points, lines, tris);
-}
-
 fn render_line_low(
-    color_buffer: Arc<RwLock<Texture>>,
-    zbuffer: Arc<RwLock<DepthBuffer>>,
+    color_buffer: &mut Texture,
+    zbuffer: &mut DepthBuffer,
     start: &Fragment, startpos: [i32; 2],
     end: &Fragment, endpos: [i32; 2],
     color: Rgba<u8>)
@@ -422,8 +409,6 @@ fn render_line_low(
     let mut d = 2*dy - dx;
     let mut y = startpos[1];
     let mut z = start.screen_pos[2];
-    let mut color_buffer = color_buffer.write().unwrap();
-    let mut zbuffer = zbuffer.write().unwrap();
     for x in startpos[0]..=endpos[0] {
         if color_buffer.is_within(x, y) && z < zbuffer.get(x, y) {
             color_buffer.set_pixel(x as u32, y as u32, color);
@@ -439,8 +424,8 @@ fn render_line_low(
 }
 
 fn render_line_high(
-    color_buffer: Arc<RwLock<Texture>>,
-    zbuffer: Arc<RwLock<DepthBuffer>>,
+    color_buffer: &mut Texture,
+    zbuffer: &mut DepthBuffer,
     start: &Fragment, startpos: [i32; 2],
     end: &Fragment, endpos: [i32; 2],
     color: Rgba<u8>)
@@ -456,8 +441,6 @@ fn render_line_high(
     let mut d = 2*dx - dy;
     let mut x = startpos[0];
     let mut z = start.screen_pos[2];
-    let mut color_buffer = color_buffer.write().unwrap();
-    let mut zbuffer = zbuffer.write().unwrap();
     for y in startpos[1]..=endpos[1] {
         if color_buffer.is_within(x, y) && z < zbuffer.get(x, y) {
             color_buffer.set_pixel(x as u32, y as u32, color);

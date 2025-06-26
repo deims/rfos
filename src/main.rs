@@ -4,6 +4,8 @@ use std::thread;
 use std::sync::{RwLock, Mutex, Arc};
 use std::usize;
 use std::collections::VecDeque;
+use std::env;
+use crossbeam_channel::{bounded, Receiver, RecvError};
 
 pub mod math;
 pub mod texture;
@@ -29,7 +31,6 @@ struct OctreeObject {
 }
 
 struct OctreeNode {
-    index: usize,
     aabb: AABB,
     child_indices: Option<[usize; 8]>,
     objects: Vec<OctreeObject>,
@@ -67,7 +68,7 @@ impl Octree {
     pub fn new(scene: Arc<Scene>, leaf_capacity: usize, min_box_size: f32) -> Self {
         let aabb = scene.models.iter()
             .fold(AABB::min_max(), |acc, m| AABB::containing(&acc, &m.bounding_box));
-        let root = OctreeNode {index: 0, aabb, child_indices: None, objects: Vec::new()};
+        let root = OctreeNode {aabb, child_indices: None, objects: Vec::new()};
         let mut octree = Self {
             scene: scene.clone(),
             leaf_capacity,
@@ -139,7 +140,6 @@ impl Octree {
         for i in 0..8 {
             child_indices[i] = self.nodes.len();
             self.nodes.push(OctreeNode {
-                index: child_indices[i],
                 aabb: child_aabbs[i],
                 child_indices: None,
                 objects: Vec::new()
@@ -206,6 +206,65 @@ impl Octree {
         }
         if isect_found {Some(qres)} else {None}
     }
+
+    pub fn render_to_file(&self, config: RenderConfig, camera_index: usize, path: &str)
+        -> std::result::Result<(), &str> {
+        if config.rasterizer_config.is_none() {
+            log::error!("cannot render octree, rasterizer config is missing");
+            return Err::<(), &str>("rasterizer config missing");
+        }
+
+        const PRIM_QUEUE_CAP: usize = 1024;
+        let (sender, receiver) = bounded(PRIM_QUEUE_CAP);
+        let fragproc_config = config.clone();
+        let handle = thread::spawn(move || {
+            let mut fragproc = FragmentProcessor::new(None, fragproc_config, camera_index,
+                receiver.clone());
+            fragproc.init();
+            fragproc.run();
+            fragproc
+        });
+
+        let camera = self.scene.get_camera(camera_index);
+        let view_matrix = camera.view_matrix();
+        let proj_matrix = camera.perspective_matrix();
+        let view_proj_matrix = proj_matrix * view_matrix;
+        let w = config.image_width as f32;
+        let h = config.image_height as f32;
+        let rasconfig = config.rasterizer_config.unwrap();
+        let color = rgba_to_vec3(rasconfig.bounding_box_color);
+
+        let mut indexq = VecDeque::<usize>::new();
+        indexq.push_back(self.root_index);
+        while !indexq.is_empty() {
+            let node_index = indexq.pop_front().unwrap();
+            let corners = self.nodes[node_index].aabb.corners_vec4();
+            let mut bbox_frags = [Fragment::new(); 8];
+            for i in 0..8 {
+                bbox_frags[i].screen_pos = view_proj_matrix * corners[i];
+                bbox_frags[i].screen_pos /= bbox_frags[i].screen_pos[3];
+                bbox_frags[i].pixel_pos = vec2! [
+                    lerp(0.0, w, -1.0, 1.0, bbox_frags[i].screen_pos[0]),
+                    lerp(h, 0.0, -1.0, 1.0, bbox_frags[i].screen_pos[1])
+                ];
+                bbox_frags[i].color = color;
+            }
+            for i in 0..4 {
+                let j = (i+1) % 4;
+                _ = sender.send(RasterPrimitive::Line(bbox_frags[i], bbox_frags[j])).unwrap();
+                _ = sender.send(RasterPrimitive::Line(bbox_frags[i+4], bbox_frags[j+4])).unwrap();
+                _ = sender.send(RasterPrimitive::Line(bbox_frags[i], bbox_frags[i+4])).unwrap();
+            }
+
+            if let Some(child_indices) = self.nodes[node_index].child_indices {
+                child_indices.into_iter().for_each(|index| indexq.push_back(index));
+            }
+        }
+        drop(sender);
+        let fragproc = handle.join().unwrap();
+        _ = fragproc.color_buffer.save(path).unwrap();
+        Ok(())
+    }
 }
 
 // raytracer
@@ -222,12 +281,12 @@ struct Tile {
     down_step: Vec3
 }
 
-pub struct Raytracer<'a> {
+pub struct Raytracer {
     scene: Arc<Scene>,
     octree: Arc<Octree>,
     config: RenderConfig,
     frame: Arc<RwLock<Texture>>,
-    camera: Option<&'a Camera>,
+    camera_index: usize,
     tile_queue: Arc<Mutex<RingBuffer<Tile>>>,
     tile_width: i32,
     tile_height: i32,
@@ -266,7 +325,7 @@ fn compute_tile_size(image_width: i32, image_height: i32) -> (i32, i32) {
     (tile_width, tile_height)
 }
 
-impl<'a> Raytracer<'a> {
+impl Raytracer {
     pub fn new(scene: Arc<Scene>, config: RenderConfig) -> Self {
         if config.raytracer_config.is_none() {
             log::error!("raytracer config is missing, exiting");
@@ -288,15 +347,18 @@ impl<'a> Raytracer<'a> {
             octree,
             config,
             frame,
-            camera: None,
+            camera_index: INVALID_INDEX,
             tile_queue,
             tile_width,
             tile_height,
         }
     }
 
-    pub fn render_frame(&mut self, cam: &'a Camera) -> &Arc<RwLock<Texture>> {
-        self.camera = Some(cam);
+}
+
+impl Renderer for Raytracer {
+    fn render_frame(&mut self, cam: &Camera) -> &Arc<RwLock<Texture>> {
+        self.camera_index = cam.index;
         let mut frame_lock = self.frame.write().unwrap();
         frame_lock.fill(self.config.background_color);
         drop(frame_lock);
@@ -345,7 +407,7 @@ impl<'a> Raytracer<'a> {
         for i in 0..worker_count {
             let id = i;
             let tile_queue = self.tile_queue.clone();
-            let camera = *self.camera.unwrap();
+            let camera = *self.scene.get_camera(self.camera_index);
             let scene = self.scene.clone();
             let octree = self.octree.clone();
             let shading_model = self.config.shading_model;
@@ -501,9 +563,11 @@ fn main() {
         image_width: 1920,
         image_height: 1200,
         render_mode: RenderMode::Filled,
-        shading_model: ShadingModel::Flat,
+        shading_model: ShadingModel::Phong,
         background_color: rgb(24, 24, 24),
         rasterizer_config: Some(RasterizerConfig {
+            vertex_processors: 1,
+            fragment_processors: 1,
             backface_culling: true,
             show_face_normals: false,
             show_vertex_normals: false,
@@ -518,14 +582,15 @@ fn main() {
         }),
         raytracer_config: Some(RaytracerConfig {
             worker_count: 24,
-            octree_leaf_capacity: 100,
+            octree_leaf_capacity: 200,
             octree_min_node_size: 1e-3
         })
     };
 
+    log::info!("creating scene");
     let mut scene = Scene::new();
     let material_index = scene.create_material(Material::default());
-    // let mesh_index = scene.create_plane_mesh(2.0, 2.0, 4, 4);
+    // let mesh_index = scene.create_plane_mesh(2.0, 2.0, 1, 1);
     // let mesh_index = scene.create_box_mesh(1.0, 1.0, 1.0);
     // let mesh_index = scene.load_wavefront_obj("data/icosahedron.obj").unwrap();
     let base_index = scene.create_box_mesh(8.0, 0.1, 8.0);
@@ -538,12 +603,15 @@ fn main() {
     let base_mm = rot * Mat4::translation(vec3![0.0, -0.05, 0.0]);
     let box1_mm = rot * Mat4::translation(vec3![0.0, 0.24, -1.1]);
     let box2_mm = rot * Mat4::translation(vec3![0.0, 0.25, 1.1]);
-    let torus_mm = Mat4::translation(vec3![0.0, 0.85, 0.0]) * rot;
+    let torus1_mm = Mat4::translation(vec3![0.0, 0.85, 0.0]) * rot;
+    let torus2_mm = Mat4::translation(vec3![0.0, 1.85, 0.0]) * rot;
 
+    // _ = scene.create_model(mesh_index, material_index, rot);
     _ = scene.create_model(base_index, material_index, base_mm);
     _ = scene.create_model(box_index, material_index, box1_mm);
     _ = scene.create_model(box_index, material_index, box2_mm);
-    _ = scene.create_model(torus_index, material_index, torus_mm);
+    _ = scene.create_model(torus_index, material_index, torus1_mm);
+    _ = scene.create_model(torus_index, material_index, torus2_mm);
 
     _ = scene.create_point_light(PointLight {
         index: INVALID_INDEX,
@@ -556,7 +624,7 @@ fn main() {
     let h = config.image_height as f32;
     let camera_index = scene.create_camera(Camera {
         index: INVALID_INDEX,
-        pos: vec3![4.0, 4.0, 0.0],
+        pos: vec3![8.0, 8.0, 0.0],
         look: Vec3::normalize(vec3![-1.0, -1.0, 0.0]),
         up: Vec3::normalize(vec3![-1.0, 1.0, 0.0]),
         znear: 0.1,
@@ -568,12 +636,24 @@ fn main() {
     let scene = Arc::new(scene);
     let cam = scene.get_camera(camera_index);
 
-    // let mut rend = Rasterizer2::new(scene.clone(), config.clone());
-    // let frame = rend.render_frame(cam);
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        log::error!("missing renderer type, give it as argument");
+        std::process::exit(1);
+    }
 
-    let mut rend = Raytracer::new(scene.clone(), config.clone());
-    let frame = rend.render_frame(cam);
-
-    let frame_lock = frame.read().unwrap();
-    _ = frame_lock.save(&config.output_file).unwrap();
+    if args[1] == "ras" {
+        let mut rend = Rasterizer2::new(scene.clone(), config.clone());
+        let frame = rend.render_frame(0);
+        _ = frame.save(&config.output_file).unwrap();
+    } else if args[1] == "ray" {
+        let mut rend = Raytracer::new(scene.clone(), config.clone());
+        _ = rend.octree.render_to_file(config.clone(), 0, "octree.png").unwrap(); 
+        let frame = rend.render_frame(cam);
+        let frame_lock = frame.read().unwrap();
+        _ = frame_lock.save(&config.output_file).unwrap();
+    } else {
+        log::error!("invalid renderer type '{}'", args[1]);
+        std::process::exit(1);
+    }
 }

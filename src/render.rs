@@ -1,6 +1,8 @@
+use std::sync::{Arc, RwLock};
 use image::Rgba;
 use crate::math::*;
-use crate::scene::INVALID_INDEX;
+use crate::texture::Texture;
+use crate::scene::{INVALID_INDEX, Camera};
 
 pub struct DepthBuffer {
    pub buffer: Vec<f32>,
@@ -237,17 +239,19 @@ pub enum ShadingModel {None, Flat, Phong}
 
 #[derive(Copy, Clone)]
 pub struct RasterizerConfig {
-   pub backface_culling: bool,
-   pub show_face_normals: bool,
-   pub show_vertex_normals: bool,
-   pub show_bounding_boxes: bool,
-   pub show_wireframe: bool,
-   pub face_normal_length: f32,
-   pub vertex_normal_length: f32,
-   pub face_normal_color: Rgba<u8>,
-   pub vertex_normal_color: Rgba<u8>,
-   pub bounding_box_color: Rgba<u8>,
-   pub wireframe_color: Rgba<u8>,
+    pub vertex_processors: usize,
+    pub fragment_processors: usize,
+    pub backface_culling: bool,
+    pub show_face_normals: bool,
+    pub show_vertex_normals: bool,
+    pub show_bounding_boxes: bool,
+    pub show_wireframe: bool,
+    pub face_normal_length: f32,
+    pub vertex_normal_length: f32,
+    pub face_normal_color: Rgba<u8>,
+    pub vertex_normal_color: Rgba<u8>,
+    pub bounding_box_color: Rgba<u8>,
+    pub wireframe_color: Rgba<u8>,
 }
 
 #[derive(Copy, Clone)]
@@ -259,14 +263,16 @@ pub struct RaytracerConfig {
 
 #[derive(Clone)]
 pub struct RenderConfig {
-   pub output_file: String,
-   pub image_width: u32,
-   pub image_height: u32,
-   pub render_mode: RenderMode,
-   pub shading_model: ShadingModel,
-   pub background_color: Rgba<u8>,
-   pub rasterizer_config: Option<RasterizerConfig>,
-   pub raytracer_config: Option<RaytracerConfig>
+    pub output_file: String,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub render_mode: RenderMode,
+    pub shading_model: ShadingModel,
+    pub background_color: Rgba<u8>,
+    pub rasterizer_config: Option<RasterizerConfig>,
+    pub raytracer_config: Option<RaytracerConfig>
 }
 
-
+pub trait Renderer {
+    fn render_frame(&mut self, cam: &Camera) -> &Arc<RwLock<Texture>>;
+}
