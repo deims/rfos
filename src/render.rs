@@ -1,5 +1,6 @@
 use image::Rgba;
 use crate::math::*;
+use crate::scene::INVALID_INDEX;
 
 pub struct DepthBuffer {
    pub buffer: Vec<f32>,
@@ -140,6 +141,7 @@ impl Fragment {
 pub struct FragmentTriangle {
    pub vertices: [Fragment; 3],
    pub centroid: Fragment,
+   pub material_index: usize,
    pub winding: i64,
    pub area: f32,
    pub clipped: bool
@@ -154,6 +156,7 @@ impl FragmentTriangle {
         FragmentTriangle {
             vertices: [Fragment::new(); 3],
             centroid: Fragment::new(),
+            material_index: INVALID_INDEX,
             winding: 0,
             area: 0.0,
             clipped: false
@@ -232,13 +235,8 @@ pub enum RenderMode {Points, Wireframe, Filled}
 #[derive(PartialEq, Copy, Clone)]
 pub enum ShadingModel {None, Flat, Phong}
 
-pub struct RenderConfig {
-   pub output_file: String,
-   pub worker_count: usize,
-   pub image_width: u32,
-   pub image_height: u32,
-   pub render_mode: RenderMode,
-   pub shading_model: ShadingModel,
+#[derive(Copy, Clone)]
+pub struct RasterizerConfig {
    pub backface_culling: bool,
    pub show_face_normals: bool,
    pub show_vertex_normals: bool,
@@ -250,7 +248,25 @@ pub struct RenderConfig {
    pub vertex_normal_color: Rgba<u8>,
    pub bounding_box_color: Rgba<u8>,
    pub wireframe_color: Rgba<u8>,
-   pub background_color: Rgba<u8>
+}
+
+#[derive(Copy, Clone)]
+pub struct RaytracerConfig {
+    pub worker_count: usize,
+    pub octree_leaf_capacity: usize,
+    pub octree_min_node_size: f32
+}
+
+#[derive(Clone)]
+pub struct RenderConfig {
+   pub output_file: String,
+   pub image_width: u32,
+   pub image_height: u32,
+   pub render_mode: RenderMode,
+   pub shading_model: ShadingModel,
+   pub background_color: Rgba<u8>,
+   pub rasterizer_config: Option<RasterizerConfig>,
+   pub raytracer_config: Option<RaytracerConfig>
 }
 
 

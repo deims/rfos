@@ -7,7 +7,7 @@ pub fn lerp(start: f32, end: f32, tmin: f32, tmax: f32, t: f32) -> f32 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct VecN<const N: usize> {
-    pub elems: [f32; N]
+    pub elems: [f32; N],
 }
 
 pub type Vec2 = VecN<2>;
@@ -41,50 +41,69 @@ impl<const N: usize> VecN<N> {
         Self{elems: [0.0; N]}
     }
 
-    pub fn mul(u: Self, v:Self) -> Self {
-        let mut ret = VecN::<N>::new();
-        for i in 0..N {
-            ret[i] = u[i] * v[i];
-        }
-        ret
+    pub fn binop<Binop: Fn(f32, f32) -> f32>(u: Self, v: Self, op: Binop) -> Self {
+        (0..N).map(|i| op(u[i], v[i])).collect()
     }
+
+    pub fn unop<Unop: Fn(f32) -> f32>(u: Self, op: Unop) -> Self {
+        (0..N).map(|i| op(u[i])).collect()
+    }
+
+    // pub fn mul(u: Self, v:Self) -> Self {
+    //     VecN::<N>::binop(u, v, |x, y| x*y)
+    // }
 
     pub fn dot(u: Self, v: Self) -> f32 {
         (0..N).map(|i| u[i]*v[i]).sum()
     }
 
+    pub fn normsq(u: Self) -> f32 {
+        (0..N).map(|i| u[i]*u[i]).sum()
+    }
+
     pub fn norm(u: Self) -> f32 {
-        f32::sqrt((0..N).map(|i| u.elems[i]*u.elems[i]).sum())
+        f32::sqrt(VecN::<N>::normsq(u))
     }
 
     pub fn normalize(u: Self) -> Self {
         let invnorm = 1.0 / VecN::<N>::norm(u);
-        VecN::<N> {
-            elems: u.elems.map(|x| x * invnorm)
-        }
+        VecN::<N>::unop(u, |x| x*invnorm)
     }
 
     pub fn clamp(u: Self, lower: f32, upper: f32) -> Self {
-        VecN::<N> {
-            elems: u.elems.map(|x| f32::clamp(x, lower, upper))
-        }
+        VecN::<N>::unop(u, |x| f32::clamp(x, lower, upper))
+    }
+
+    pub fn distsq(u: VecN<N>, v: VecN<N>) -> f32 {
+        VecN::<N>::normsq(u - v)
     }
 
     pub fn dist(u: VecN<N>, v: VecN<N>) -> f32 {
-        let mut s: f32 = 0.0;
-        for i in 0..N {
-            let d = u[i] - v[i];
-            s += d*d;
-        }
-        f32::sqrt(s)
+        VecN::<N>::norm(u - v)
     }
 
     pub fn lerp(start: VecN<N>, end: VecN<N>, tmin: f32, tmax: f32, t: f32) -> VecN<N> {
-        let mut ret = VecN::<N>::new();
-        for i in 0..N {
-            ret[i] = lerp(start[i], end[i], tmin, tmax, t);
+        VecN::<N>::binop(start, end, |startx, endx| lerp(startx, endx, tmin, tmax, t))
+    }
+
+    pub fn min(u: VecN<N>, v: VecN<N>) -> VecN<N> {
+        VecN::<N>::binop(u, v, |x, y| f32::min(x, y))
+    }
+
+    pub fn max(u: VecN<N>, v: VecN<N>) -> VecN<N> {
+        VecN::<N>::binop(u, v, |x, y| f32::max(x, y))
+    }
+}
+
+impl<const N: usize> FromIterator<f32> for VecN<N> {
+    fn from_iter<I: IntoIterator<Item=f32>>(iter: I) -> Self {
+        let mut vec = VecN::<N>::new();
+        let mut index = 0usize;
+        for x in iter {
+            vec[index] = x;
+            index += 1;
         }
-        ret
+        vec
     }
 }
 
@@ -100,7 +119,7 @@ impl VecN<3> {
     pub fn transform_point(u: Self, a: Mat4) -> Self {
         vec3![
             a[0][0]*u[0] + a[0][1]*u[1] + a[0][2]*u[2] + a[0][3],
-a[1][0]*u[0] + a[1][1]*u[1] + a[1][2]*u[2] + a[1][3],
+            a[1][0]*u[0] + a[1][1]*u[1] + a[1][2]*u[2] + a[1][3],
             a[2][0]*u[0] + a[2][1]*u[1] + a[2][2]*u[2] + a[2][3]
         ]
     }
@@ -142,7 +161,7 @@ impl VecN<4> {
 
 impl<const N: usize> fmt::Display for VecN<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
-let mut ret: fmt::Result = Ok(());
+        let mut ret: fmt::Result = Ok(());
         for i in 0..N {
             ret = write!(f, "{}", self[i]);
             if i < N-1 {
@@ -169,77 +188,49 @@ impl<const N: usize> ops::IndexMut<usize> for VecN<N> {
 impl <const N: usize> ops::Neg for VecN<N> {
     type Output = Self;
     fn neg(self) -> Self::Output {
-        let mut ret = Self::new();
-        for i in 0..N {
-            ret[i] = -self[i];
-        }
-        ret
+        VecN::<N>::unop(self, |x| -x)
     }
 }
 
 impl<const N: usize> ops::Add for VecN<N> {
     type Output = Self;
     fn add(self, v: Self) -> Self {
-        let mut ret = Self::new();
-        for i in 0..N {
-            ret[i] = self[i] + v[i];
-        }
-        ret
+        VecN::<N>::binop(self, v, |x, y| x + y)
     }
 }
 
 impl<const N: usize> ops::Sub for VecN<N> {
     type Output = Self;
     fn sub(self, v: Self) -> Self {
-        let mut ret = Self::new();
-        for i in 0..N {
-            ret[i] = self[i] - v[i];
-        }
-        ret
+        VecN::<N>::binop(self, v, |x, y| x - y)
     }
 }
 
 impl<const N: usize> ops::Mul<VecN<N>> for VecN<N> {
     type Output = Self;
     fn mul(self, v: VecN<N>) -> Self::Output {
-        let mut ret = Self::new();
-        for i in 0..N {
-            ret[i] = self[i] * v[i];
-        }
-        ret
+        VecN::<N>::binop(self, v, |x, y| x * y)
     }
 }
 
 impl<const N: usize> ops::Mul<f32> for VecN<N> {
     type Output = Self;
     fn mul(self, a: f32) -> Self {
-        let mut ret = Self::new();
-        for i in 0..N {
-            ret[i] = self[i] * a;
-        }
-        ret
+        VecN::<N>::unop(self, |x| x * a)
     }
 }
 
 impl<const N: usize> ops::Mul<VecN<N>> for f32  {
     type Output = VecN<N>;
     fn mul(self, v: VecN<N>) -> Self::Output {
-        let mut ret = VecN::<N>::new();
-        for i in 0..N {
-            ret[i] = self * v[i];
-        }
-        ret
+        v * self
     }
 }
 
 impl<const N: usize> ops::Div<f32> for VecN<N> {
     type Output = Self;
     fn div(self, a: f32) -> Self {
-        let mut ret = Self::new();
-        for i in 0..N {
-            ret[i] = self[i] / a;
-        }
-        ret
+        VecN::<N>::unop(self, |x| x / a)
     }
 }
 
@@ -304,6 +295,14 @@ impl Mat4 {
         crate::math::Mat4{elems: [0.0; 16]}
     }
 
+    pub fn binop<Binop: Fn(f32, f32) -> f32>(a: Self, b: Self, op: Binop) -> Self {
+        (0..16).map(|i| op(a.elems[i], b.elems[i])).collect()
+    }
+
+    pub fn unop<Unop: Fn(f32) -> f32>(a: Self, op: Unop) -> Self {
+        (0..16).map(|i| op(a.elems[i])).collect()
+    }
+
     pub fn print(m: Self, title: &str) {
         println!("{}:", title);
         for i in 0..4 {
@@ -316,6 +315,11 @@ impl Mat4 {
             println!();
         }
         println!();
+    }
+
+    pub fn dist(a: Mat4, b: Mat4) -> f32 {
+        let diff = a - b;
+        f32::sqrt((0..16).map(|i| diff.elems[i]*diff.elems[i]).sum())
     }
 
     pub fn transpose(m: Self) -> Self {
@@ -372,15 +376,6 @@ impl Mat4 {
         result
     }
 
-    pub fn dist(a: Self, b: Self) -> f32 {
-        let mut s: f32 = 0.0;
-        for i in 0..16 {
-            let diff = a.elems[i] - b.elems[i];
-            s += diff * diff;
-        }
-        f32::sqrt(s)
-    }
-
     pub fn identity() -> Self {
         mat4![
             1.0, 0.0, 0.0, 0.0,
@@ -424,6 +419,18 @@ impl Mat4 {
     }
 }
 
+impl FromIterator<f32> for Mat4 {
+    fn from_iter<I: IntoIterator<Item=f32>>(iter: I) -> Self {
+        let mut mat = Mat4::new();
+        let mut index = 0usize;
+        for x in iter {
+            mat.elems[index] = x;
+            index += 1;
+        }
+        mat
+    }
+}
+
 impl ops::Index<usize> for Mat4 {
     type Output = [f32];
     fn index(&self, i: usize) -> &Self::Output {
@@ -440,52 +447,28 @@ impl ops::IndexMut<usize> for Mat4 {
 impl ops::Add for Mat4 {
     type Output = Self;
     fn add(self, v: Self) -> Self {
-        let mut ret = Self::new();
-        for i in 0..4 {
-            for j in 0..4 {
-                ret[i][j] = self[i][j] + v[i][j];
-            }
-        }
-        ret
+        Mat4::binop(self, v, |x, y| x + y)
     }
 }
 
 impl ops::Sub for Mat4 {
     type Output = Self;
     fn sub(self, v: Self) -> Self {
-        let mut ret = Self::new();
-        for i in 0..4 {
-            for j in 0..4 {
-                ret[i][j] = self[i][j] - v[i][j];
-            }
-        }
-        ret
+        Mat4::binop(self, v, |x, y| x - y)
     }
 }
 
 impl ops::Mul<f32> for Mat4 {
     type Output = Self;
     fn mul(self, a: f32) -> Self {
-        let mut ret = Self::new();
-        for i in 0..4 {
-            for j in 0..4 {
-                ret[i][j] = self[i][j] * a;
-            }
-        }
-        ret
+        Mat4::unop(self, |x| x * a)
     }
 }
 
 impl ops::Mul<Mat4> for f32 {
     type Output = Mat4;
     fn mul(self, m: Self::Output) -> Self::Output {
-        let mut ret = Self::Output::new();
-        for i in 0..4 {
-            for j in 0..4 {
-                ret[i][j] = self * m[i][j];
-            }
-        }
-        ret
+        m * self
     }
 }
 
@@ -628,22 +611,6 @@ pub fn overlap(min1: f32, max1: f32, min2: f32, max2: f32) -> bool {
     f32::max(min1, min2) <= f32::min(max1, max2)
 }
 
-// pub fn barycentric(a: Vec3, b: Vec3, c: Vec3, point: Vec3) -> Vec3 {
-//     let v0 = b - a;
-//     let v1 = c - a;
-//     let v2 = point - a;
-//     let d00 = Vec3::dot(v0, v0);
-//     let d01 = Vec3::dot(v0, v1);
-//     let d11 = Vec3::dot(v1, v1);
-//     let d20 = Vec3::dot(v2, v0);
-//     let d21 = Vec3::dot(v2, v1);
-//     let denom = d00*d11 - d01*d01;
-//     let v = (d11*d20 - d01*d21)/denom;
-//     let w = (d00*d21 - d01*d20)/denom;
-//     let u = 1.0 - v - w;
-//     vec3![u, v, w]
-// }
-
 #[derive(Clone, Copy)]
 pub struct Triangle {
     pub p: [Vec3; 3]
@@ -654,68 +621,48 @@ impl Triangle {
         Triangle{p: [a, b, c]}
     }
 
-    pub fn face_normal(tri: &Triangle) -> Vec3 {
-        let e1 = tri.p[1] - tri.p[0];
-        let e2 = tri.p[2] - tri.p[0];
+    pub fn normal(&self) -> Vec3 {
+        let e1 = self.p[1] - self.p[0];
+        let e2 = self.p[2] - self.p[0];
         Vec3::cross(e1, e2)
     }
 
-    pub fn unit_face_normal(tri: &Triangle) -> Vec3 {
-        Vec3::normalize(Triangle::face_normal(tri))
+    pub fn unit_normal(&self) -> Vec3 {
+        Vec3::normalize(self.normal())
     }
 
-    pub fn project_to_axis(tri: &Triangle, axis: Vec3) -> (f32, f32) {
-        let mut min = Vec3::dot(tri.p[0], axis);
+    pub fn project_to_axis(&self, axis: Vec3) -> (f32, f32) {
+        let mut min = Vec3::dot(self.p[0], axis);
         let mut max = min;
         for i in 1..3 {
-            let proj = Vec3::dot(tri.p[i], axis);
+            let proj = Vec3::dot(self.p[i], axis);
             min = f32::min(min, proj);
             max = f32::max(max, proj);
         }
         (min, max)
     }
 
-    pub fn aabb_intersects(tri: &Triangle, aabb: &AABB) -> bool {
-        const AXIS: [Vec3; 3] = [
-            vec3![1.0, 0.0, 0.0],
-            vec3![0.0, 1.0, 0.0],
-            vec3![0.0, 0.0, 1.0]
-        ];
-
-        for axis in AXIS {
-            let (tri_min, tri_max) = Triangle::project_to_axis(tri, axis);
-            let (box_min, box_max) = AABB::project_to_axis(aabb, axis);
-            if !overlap(tri_min, tri_max, box_min, box_max) {
+    pub fn intersects_aabb(&self, aabb: &AABB) -> bool {
+        let boxnormals = [vec3![1.0, 0.0, 0.0], vec3![0.0, 1.0, 0.0], vec3![0.0, 0.0, 1.0]];
+        for i in 0..3 {
+            let (trimin, trimax) = self.project_to_axis(boxnormals[i]);
+            if trimax < aabb.min[i] || trimin > aabb.max[i] {
                 return false;
             }
         }
-
-        let mut tri_normal = Triangle::face_normal(tri);
-        const EPS: f32 = 1e-6;
-        if Vec3::dot(tri_normal, tri_normal) < EPS {
-            // TODO: this is a degenerate case where the area of the triangle is very small
-            // it would be a good idea to think through how to handle this case
-            // for now we return false
+        let trinormal = self.normal();
+        let trioffset = Vec3::dot(trinormal, self.p[0]);
+        let (boxmin, boxmax) = aabb.project_to_axis(trinormal);
+        if boxmax < trioffset || boxmin > trioffset {
             return false;
         }
-        tri_normal = Vec3::normalize(tri_normal);
-        let (tri_min, tri_max) = Triangle::project_to_axis(tri, tri_normal);
-        let (box_min, box_max) = AABB::project_to_axis(aabb, tri_normal);
-        if !overlap(tri_min, tri_max, box_min, box_max) {
-            return false;
-        }
-
-        let tri_edges = [tri.p[1] - tri.p[0], tri.p[2] - tri.p[1], tri.p[0] - tri.p[2]];
+        let triedges = [self.p[0]-self.p[1], self.p[1]-self.p[2], self.p[2]-self.p[0]];
         for i in 0..3 {
             for j in 0..3 {
-                let mut axis = Vec3::cross(tri_edges[i], AXIS[j]);
-                if Vec3::dot(axis, axis) < EPS {
-                    continue;
-                }
-                axis = Vec3::normalize(axis);
-                let (tri_min, tri_max) = Triangle::project_to_axis(tri, axis);
-                let (box_min, box_max) = AABB::project_to_axis(aabb, axis);
-                if !overlap(tri_min, tri_max, box_min, box_max) {
+                let axis = Vec3::cross(triedges[i], boxnormals[j]);
+                let (boxmin, boxmax) = aabb.project_to_axis(axis);
+                let (trimin, trimax) = self.project_to_axis(axis);
+                if boxmax < trimin || boxmin > trimax {
                     return false;
                 }
             }
@@ -732,6 +679,23 @@ pub struct AABB {
 }
 
 impl AABB {
+    pub fn min_max() -> Self {
+        Self {
+            min: vec3![f32::MAX, f32::MAX, f32::MAX],
+            max: vec3![f32::MIN, f32::MIN, f32::MIN]
+        }
+    }
+
+    pub fn center(&self) -> Vec3 {
+        0.5 * (self.min + self.max)
+    }
+
+    pub fn size(&self) -> f32 {
+        (self.max[0] - self.min[0])
+            .max(self.max[1] - self.min[1])
+            .max(self.max[2] - self.min[2])
+    }
+
     pub fn corners(&self) -> [Vec3; 8] {
         [
             vec3![self.min[0], self.min[1], self.min[2]],
@@ -770,8 +734,8 @@ impl AABB {
         self.min[2] <= v[2] && v[2] <= self.max[2]
     }
 
-    pub fn project_to_axis(aabb: &AABB, axis: Vec3) -> (f32, f32) {
-        let verts = aabb.corners();
+    pub fn project_to_axis(&self, axis: Vec3) -> (f32, f32) {
+        let verts = self.corners();
         let mut min = Vec3::dot(verts[0], axis);
         let mut max = min;
         for i in 1..8 {
@@ -780,6 +744,10 @@ impl AABB {
             max = f32::max(max, proj);
         }
         (min, max)
+    }
+
+    pub fn containing(a: &AABB, b: &AABB) -> AABB {
+        AABB{min: Vec3::min(a.min, b.min), max: Vec3::max(a.max, b.max)}
     }
 }
 
@@ -808,32 +776,32 @@ pub struct Ray {
 }
 
 impl Ray {
-    pub fn intersects_triangle(ray: &Ray, v0: Vec3, v1: Vec3, v2: Vec3) -> Option<(Vec3, Vec3)> {
+    pub fn intersects_triangle(&self, tri: &Triangle) -> Option<(Vec3, Vec3)> {
         const EPS: f32 = 1e-8;
-        let v0v1 = v1 - v0;
-        let v0v2 = v2 - v0;
+        let v0v1 = tri.p[1] - tri.p[0];
+        let v0v2 = tri.p[2] - tri.p[0];
         let n = Vec3::cross(v0v1, v0v2);
         let denom = Vec3::dot(n, n);
-        let ndotraydir = Vec3::dot(n, ray.dir);
+        let ndotraydir = Vec3::dot(n, self.dir);
         if f32::abs(ndotraydir) < EPS { return None; } // ray is parallel to triangle
-        let d = -Vec3::dot(n, v0);
-        let t = -(Vec3::dot(n, ray.origin) + d) / ndotraydir;
+        let d = -Vec3::dot(n, tri.p[0]);
+        let t = -(Vec3::dot(n, self.origin) + d) / ndotraydir;
         if t < 0.0 { return None; } // triangle is behind the origin
-        let ipoint = ray.origin + t*ray.dir; // intersection point of ray and plane
+        let ipoint = self.origin + t*self.dir; // intersection point of ray and plane
                                              
-        let v1p = ipoint - v1;
-        let v1v2 = v2 - v1;
+        let v1p = ipoint - tri.p[1];
+        let v1v2 = tri.p[2] - tri.p[1];
         let mut c = Vec3::cross(v1v2, v1p);
         let mut u = Vec3::dot(n, c);
         if u < 0.0 { return None; }
 
-        let v2p = ipoint - v2;
-        let v2v0 = v0 - v2;
+        let v2p = ipoint - tri.p[2];
+        let v2v0 = tri.p[0] - tri.p[2];
         c = Vec3::cross(v2v0, v2p);
         let mut v = Vec3::dot(n, c);
         if v < 0.0 { return None; }
 
-        let v0p = ipoint - v0;
+        let v0p = ipoint - tri.p[0];
         c = Vec3::cross(v0v1, v0p);
         if Vec3::dot(n, c) < 0.0 { return None; }
 
@@ -841,6 +809,64 @@ impl Ray {
         v /= denom;
         let w = 1.0 - u - v;
         Some((ipoint, vec3![u, v, w]))
+    }
+
+    pub fn intersects_aabb(&self, aabb: &AABB) -> Option<Vec3> {
+        const RIGHT: u8 = 0;
+        const LEFT: u8 = 1;
+        const MIDDLE: u8 = 2;
+
+        let mut inside = true;
+        let mut quadrant = [RIGHT; 3];
+        let mut maxt = Vec3::new();
+        let mut cand_plane = Vec3::new();
+
+        for i in 0..3 {
+            if self.origin[i] < aabb.min[i] {
+                quadrant[i] = LEFT;
+                cand_plane[i] = aabb.min[i];
+                inside = false;
+            } else if self.origin[i] > aabb.max[i] {
+                quadrant[i] = RIGHT;
+                cand_plane[i] = aabb.max[i];
+                inside = false;
+            } else {
+                quadrant[i] = MIDDLE;
+            }
+        }
+
+        if inside {
+            return Some(self.origin);
+        }
+
+        for i in 0..3 {
+            if quadrant[i] != MIDDLE && self.dir[i] != 0.0 {
+                maxt[i] = (cand_plane[i] - self.origin[i]) / self.dir[i];
+            } else {
+                maxt[i] = -1.0;
+            }
+        }
+
+        let mut which_plane = 0usize;
+        for i in 1..3 {
+            if maxt[which_plane] < maxt[i] {
+                which_plane = i;
+            }
+        }
+
+        if maxt[which_plane] < 0.0 { return None; }
+        let mut ip = Vec3::new();
+        for i in 0..3 {
+            if which_plane != i {
+                ip[i] = self.origin[i] + maxt[which_plane]*self.dir[i];
+                if ip[i] < aabb.min[i] || ip[i] > aabb.max[i] {
+                    return None;
+                }
+            } else {
+                ip[i] = cand_plane[i];
+            }
+        }
+        Some(ip)
     }
 }
 

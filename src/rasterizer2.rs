@@ -1,6 +1,6 @@
 use std::thread;
 use std::sync::{Mutex, RwLock, Condvar, Arc};
-use image::{Rgba, ImageResult};
+use image::Rgba;
 use crossbeam_channel::{bounded, Receiver, RecvError};
 
 use crate::math::*;
@@ -73,15 +73,15 @@ impl<T: Copy> BlockingQueue<T> {
 //     }
 // }
 
-pub struct Rasterizer2<'a> {
-    scene: &'a Scene,
-    config: &'a RenderConfig,
+pub struct Rasterizer2 {
+    scene: Arc<Scene>,
+    config: RenderConfig,
     color_buffer: Arc<RwLock<Texture>>,
     zbuffer: Arc<RwLock<DepthBuffer>>,
-    camera: Option<&'a Camera>,
-    model: Option<&'a Model>,
-    mesh: Option<&'a Mesh>,
-    material: Option<&'a Material>,
+    camera_index: usize,
+    model_index: usize,
+    mesh_index: usize,
+    material_index: usize,
     view_matrix: Mat4,
     proj_matrix: Mat4,
     view_proj_matrix: Mat4,
@@ -90,21 +90,24 @@ pub struct Rasterizer2<'a> {
     model_view_proj_matrix: Mat4,
     color_buffer_width: f32,
     color_buffer_height: f32,
-    // primitive_queue: Arc<BlockingQueue<RasterPrimitive>>,
 }
 
-impl<'a> Rasterizer2<'a> {
-    pub fn new(scene: &'a Scene, config: &'a RenderConfig) -> Self {
+impl Rasterizer2 {
+    pub fn new(scene: Arc<Scene>, config: RenderConfig) -> Self {
+        if config.rasterizer_config.is_none() {
+            log::error!("rasterizer config is missing, exiting");
+            std::process::exit(1);
+        }
         let (w, h) = (config.image_width, config.image_height);
         Rasterizer2 {
             scene,
-            config,
+            config: config.clone(),
             color_buffer: Arc::new(RwLock::new(Texture::new(w, h))),
             zbuffer: Arc::new(RwLock::new(DepthBuffer::new(w, h))),
-            camera: None,
-            model: None,
-            mesh: None,
-            material: None,
+            camera_index: INVALID_INDEX,
+            model_index: INVALID_INDEX,
+            mesh_index: INVALID_INDEX,
+            material_index: INVALID_INDEX,
             view_matrix: Mat4::new(),
             proj_matrix: Mat4::new(),
             view_proj_matrix: Mat4::new(),
@@ -113,7 +116,6 @@ impl<'a> Rasterizer2<'a> {
             model_view_proj_matrix: Mat4::new(),
             color_buffer_width: config.image_width as f32,
             color_buffer_height: config.image_height as f32,
-            // primitive_queue: Arc::new(BlockingQueue::new(PRIMITIVE_QUEUE_CAPACITY)),
         }
     }
 
@@ -127,8 +129,8 @@ impl<'a> Rasterizer2<'a> {
         ]
     }
 
-    pub fn render_frame(&mut self, cam: &'a Camera) -> ImageResult<()> {
-        self.camera = Some(cam);
+    pub fn render_frame(&mut self, cam: &Camera) -> &Arc<RwLock<Texture>> {
+        self.camera_index = cam.index;
         self.view_matrix = cam.view_matrix();
         self.proj_matrix = cam.perspective_matrix();
         self.view_proj_matrix =  self.proj_matrix * self.view_matrix;
@@ -149,24 +151,30 @@ impl<'a> Rasterizer2<'a> {
         const PRIMITIVE_QUEUE_CAPACITY: usize = 1024;
         let (prim_sender, prim_receiver) = bounded(PRIMITIVE_QUEUE_CAPACITY);
         for _i in 0..worker_count {
+            let scene = self.scene.clone();
             let color_buffer = self.color_buffer.clone();
             let zbuffer = self.zbuffer.clone();
             let worker_receiver = prim_receiver.clone();
+            let cam_index = cam.index;
             rasterizer_handles.push(thread::spawn(move || {
-                rasterizer_worker(color_buffer, zbuffer, worker_receiver); 
+                rasterizer_worker(scene, cam_index, color_buffer, zbuffer, worker_receiver); 
             }));
         }
 
+        let rasconfig = self.config.rasterizer_config.unwrap();
+        let wireframe_color = rgba_to_vec3(rasconfig.wireframe_color);
+
         let mut fragtri = FragmentTriangle::new();
         for model in &self.scene.models {
-            self.model = Some(model);
-            self.material = Some(self.scene.get_material(model.material_index));
-            self.mesh = Some(self.scene.get_mesh(model.mesh_index));
+            self.model_index = model.index;
+            self.material_index = model.material_index;
+            self.mesh_index = model.mesh_index;
             self.normal_matrix = Mat4::transpose(Mat4::inverse(model.model_matrix));
             self.model_view_matrix = self.view_matrix * model.model_matrix;
             self.model_view_proj_matrix = self.proj_matrix * self.model_view_matrix;
-            let mesh = self.mesh.unwrap();
-            let material = self.material.unwrap();
+            let mesh = self.scene.get_mesh(model.mesh_index);
+            let material = self.scene.get_material(model.material_index);
+            fragtri.material_index = model.material_index;
             if self.config.render_mode == RenderMode::Points {
                 for vertex in &mesh.vertices {
                     let world_pos = Vec3::transform_point(*vertex, model.model_matrix);
@@ -179,7 +187,7 @@ impl<'a> Rasterizer2<'a> {
                         normal: Vec3::new(),
                         uv: Vec3::new(),
                         pixel_pos: fpixpos,
-                        color: rgba_to_vec3(self.config.wireframe_color)
+                        color: wireframe_color
                     })).unwrap();
                 }
             } else {
@@ -187,7 +195,7 @@ impl<'a> Rasterizer2<'a> {
                     let face = &mesh.faces[face_index];
                     let mut face_normal = mesh.face_normals[face_index];
                     face_normal = Vec3::transform_dir(face_normal, self.normal_matrix);
-                    if self.config.backface_culling {
+                    if rasconfig.backface_culling {
                         let mut v = mesh.vertices[face[0].vertex];
                         v = Vec3::transform_point(v, model.model_matrix);
                         if Vec3::dot(v - cam.pos, face_normal) >= 0.0 {
@@ -204,7 +212,7 @@ impl<'a> Rasterizer2<'a> {
                         frag.uv = vec3![uv[0], uv[1], 1.0]/frag.screen_pos[2];
                         if self.config.shading_model == ShadingModel::Flat {
                             frag.normal = face_normal;
-                        } else {
+                        } else if self.config.shading_model == ShadingModel::Phong {
                             let vnormal = mesh.vertex_normals[face[i].normal];
                             frag.normal = Vec3::transform_dir(vnormal, self.normal_matrix);
                         }
@@ -223,7 +231,7 @@ impl<'a> Rasterizer2<'a> {
                         if self.config.shading_model == ShadingModel::None {
                             frag.color = material.diffuse_color;
                         } else {
-                            frag.color = self.phong_shade(&frag);
+                            frag.color = phong_shade(self.scene.clone(), &frag, material, cam);
                         }
                         fragtri.centroid.world_pos += frag.world_pos;
                         fragtri.centroid.uv += frag.uv;
@@ -238,7 +246,8 @@ impl<'a> Rasterizer2<'a> {
                     if self.config.shading_model == ShadingModel::None {
                         fragtri.centroid.color = material.diffuse_color;
                     } else {
-                        fragtri.centroid.color = self.phong_shade(&fragtri.centroid);
+                        fragtri.centroid.color = phong_shade(self.scene.clone(),
+                            &fragtri.centroid, material, cam);
                     }
 
                     if self.config.render_mode == RenderMode::Filled {
@@ -254,10 +263,11 @@ impl<'a> Rasterizer2<'a> {
                         }
                     }
 
-                    if self.config.show_face_normals {
-                        let color = rgba_to_vec3(self.config.face_normal_color);
+                    if rasconfig.show_face_normals {
+                        let color = rgba_to_vec3(rasconfig.face_normal_color);
                         let mut end = Fragment::new();
-                        end.world_pos = self.config.face_normal_length*fragtri.centroid.normal + fragtri.centroid.world_pos;
+                        end.world_pos = rasconfig.face_normal_length*fragtri.centroid.normal
+                            + fragtri.centroid.world_pos;
                         end.screen_pos = self.view_proj_matrix * end.world_pos.to_point();
                         end.screen_pos /= end.screen_pos[3];
                         end.pixel_pos = self.frag_pixel_pos(end.screen_pos);
@@ -267,9 +277,9 @@ impl<'a> Rasterizer2<'a> {
                         _ = prim_sender.send(RasterPrimitive::Line(start, end)).unwrap();
                     }
 
-                    if self.config.show_vertex_normals {
-                        let nlen = self.config.vertex_normal_length;
-                        let color = rgba_to_vec3(self.config.vertex_normal_color);
+                    if rasconfig.show_vertex_normals {
+                        let nlen = rasconfig.vertex_normal_length;
+                        let color = rgba_to_vec3(rasconfig.vertex_normal_color);
                         let mut end = Fragment::new();
                         for frag in &fragtri.vertices {
                             end.world_pos = nlen*frag.normal + frag.world_pos;
@@ -285,10 +295,10 @@ impl<'a> Rasterizer2<'a> {
                 }
             }
 
-            if self.config.show_bounding_boxes {
+            if rasconfig.show_bounding_boxes {
                 let corners = model.bounding_box.corners_vec4();
                 let mut bbox_frags = [Fragment::new(); 8];
-                let color = rgba_to_vec3(self.config.bounding_box_color);
+                let color = rgba_to_vec3(rasconfig.bounding_box_color);
                 for i in 0..8 {
                     bbox_frags[i].screen_pos = self.view_proj_matrix * corners[i];
                     bbox_frags[i].screen_pos /= bbox_frags[i].screen_pos[3];
@@ -307,17 +317,13 @@ impl<'a> Rasterizer2<'a> {
         for handle in rasterizer_handles {
             _ = handle.join().unwrap();
         }
-        let cbuf = self.color_buffer.write().unwrap();
-        cbuf.save(&self.config.output_file)
-    }
-
-    fn phong_shade(&self, _frag: &Fragment) -> Vec3 {
-        let material = self.material.unwrap();
-        material.diffuse_color
+        &self.color_buffer
     }
 }
 
 fn rasterizer_worker(
+    scene: Arc<Scene>,
+    camera_index: usize,
     color_buffer: Arc<RwLock<Texture>>,
     zbuffer: Arc<RwLock<DepthBuffer>>,
     receiver: Receiver<RasterPrimitive>)
@@ -363,6 +369,8 @@ fn rasterizer_worker(
             Ok(RasterPrimitive::Triangle(fragtri)) => {
                 tris += 1;
                 let (min, max) = fragtri.pixel_extents();
+                let camera = scene.get_camera(camera_index);
+                let material = scene.get_material(fragtri.material_index);
                 let mut cb = color_buffer.write().unwrap();
                 let mut zb = zbuffer.write().unwrap();
                 for y in min[1]..=max[1] {
@@ -378,7 +386,12 @@ fn rasterizer_worker(
                             bc /= fragtri.area;
                             let frag = fragtri.weighted_sum(bc);
                             if frag.screen_pos[2] < zb.get(x, y) {
-                                let color = vec3![0.5, 0.5, 0.5];
+                                let color = phong_shade(
+                                    scene.clone(),
+                                    &frag,
+                                    material,
+                                    camera
+                                );
                                 cb.set_pixel(x as u32, y as u32, rgba_from_vec3(color));
                                 zb.set(x, y, frag.screen_pos[2]);
                             }
@@ -457,4 +470,48 @@ fn render_line_high(
         d += 2*dx;
         z += dz;
     }
+}
+
+fn get_color(scene: Arc<Scene>, map_index: usize, u: f32, v: f32, default: Vec3) -> Vec3 {
+    if map_index == INVALID_INDEX { return default; }
+    let tex = scene.get_texture(map_index);
+    rgba_to_vec3(tex.get_pixel_uv(u, v))
+}
+
+fn ambient_color(scene: Arc<Scene>, material: &Material, u: f32, v: f32) -> Vec3 {
+    get_color(scene.clone(), material.diffuse_map_index, u, v, vec3![1.0, 1.0, 1.0])
+}
+
+fn diffuse_color(scene: Arc<Scene>, material: &Material, u: f32, v: f32) -> Vec3 {
+    get_color(scene.clone(), material.diffuse_map_index, u, v, material.diffuse_color)
+}
+
+fn phong_shade(
+    scene: Arc<Scene>,
+    frag: &Fragment,
+    material: &Material,
+    cam: &Camera) -> Vec3
+{
+    let ucorr = frag.uv[0]/frag.uv[2];
+    let vcorr = frag.uv[1]/frag.uv[2];
+    let v = Vec3::normalize(cam.pos - frag.world_pos);
+    let ambcolor = ambient_color(scene.clone(), material, ucorr, vcorr);
+    let mut intensity = vec3![0.05, 0.05, 0.05]*material.ambient_coeff*ambcolor;
+    for light in &scene.point_lights {
+        let mut l = light.pos - frag.world_pos;
+        let d = Vec3::norm(l);
+        l /= d;
+        let mut nl = Vec3::dot(frag.normal, l);
+        let r = 2.0 * nl * (frag.normal - l);
+        let att = f32::min(1.0/(light.attenuation[0] + light.attenuation[1]*d + light.attenuation[2]*d*d), 1.0);
+        nl = f32::max(nl, 0.0);
+        let rv = f32::powf(f32::max(Vec3::dot(r, v), 0.0), material.specular_exp);
+        let diffcolor = diffuse_color(scene.clone(), material, ucorr, vcorr);
+        let diff = nl * material.diffuse_coeff * diffcolor;
+        let spec = rv * material.specular_coeff * material.specular_color;
+        for i in 0..3 {
+            intensity[i] += light.color[i] * att * (diff[i] + spec[i]);
+        }
+    }
+    Vec3::clamp(intensity, 0.0, 1.0)
 }
