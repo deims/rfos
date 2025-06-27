@@ -1,8 +1,6 @@
-use std::sync::{Arc, RwLock};
 use image::Rgba;
 use crate::math::*;
-use crate::texture::Texture;
-use crate::scene::{INVALID_INDEX, Camera};
+use crate::scene::INVALID_INDEX;
 
 pub struct DepthBuffer {
    pub buffer: Vec<f32>,
@@ -258,7 +256,8 @@ pub struct RasterizerConfig {
 pub struct RaytracerConfig {
     pub worker_count: usize,
     pub octree_leaf_capacity: usize,
-    pub octree_min_node_size: f32
+    pub octree_min_node_size: f32,
+    pub render_octree: bool
 }
 
 #[derive(Clone)]
@@ -273,6 +272,3 @@ pub struct RenderConfig {
     pub raytracer_config: Option<RaytracerConfig>
 }
 
-pub trait Renderer {
-    fn render_frame(&mut self, cam: &Camera) -> &Arc<RwLock<Texture>>;
-}
