@@ -34,8 +34,8 @@ impl OctreeQueryResult {
             model_index: 0,
             face_index: 0,
             dist: f32::MAX,
-            point: Vec3::new(),
-            barycentric: Vec3::new()
+            point: Vec3::zero(),
+            barycentric: Vec3::zero()
         }
     }
 }
@@ -51,7 +51,8 @@ pub struct Octree {
 impl Octree {
     pub fn new(scene: Arc<Scene>, leaf_capacity: usize, min_box_size: f32) -> Self {
         let aabb = scene.models.iter()
-            .fold(AABB::min_max(), |acc, m| AABB::containing(&acc, &m.bounding_box));
+            .fold(AABB{min: Vec3::zero(), max: Vec3::zero()},
+            |acc, m| AABB::merge(&acc, &m.bounding_box));
         let root = OctreeNode {aabb, child_indices: None, objects: Vec::new()};
         let mut octree = Self {
             scene: scene.clone(),
@@ -97,7 +98,7 @@ impl Octree {
             self.nodes[node_index].objects.push(obj);
             let node_aabb = self.nodes[node_index].aabb;
             let objcount = self.nodes[node_index].objects.len();
-            if objcount > self.leaf_capacity && node_aabb.size() > self.min_box_size {
+            if objcount > self.leaf_capacity && node_aabb.max_extent() > self.min_box_size {
                 self.subdivide(node_index);
             }
         }
@@ -193,10 +194,6 @@ impl Octree {
 
     pub fn render_to_file(&self, config: RenderConfig, camera_index: usize, path: &str)
         -> std::result::Result<(), &str> {
-        if config.rasterizer_config.is_none() {
-            log::error!("cannot render octree, rasterizer config is missing");
-            return Err::<(), &str>("rasterizer config missing");
-        }
 
         let (sender, receiver) = bounded(PRIM_QUEUE_CAP);
         let handle = FragmentProcessor::launch(None, config.clone(), camera_index, receiver);
@@ -207,7 +204,7 @@ impl Octree {
         let view_proj_matrix = proj_matrix * view_matrix;
         let w = config.image_width as f32;
         let h = config.image_height as f32;
-        let rasconfig = config.rasterizer_config.unwrap();
+        let rasconfig = &config.rasterizer_config;
         let color = rgba_to_vec3(rasconfig.bounding_box_color);
 
         let mut indexq = VecDeque::<usize>::new();

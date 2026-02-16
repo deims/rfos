@@ -37,8 +37,12 @@ pub(crate) use vec3;
 pub(crate) use vec4;
 
 impl<const N: usize> VecN<N> {
-    pub fn new() -> Self {
-        Self{elems: [0.0; N]}
+    pub fn zero() -> Self {
+        VecN::<N>::splat(0.0)
+    }
+
+    pub fn splat(x: f32) -> Self {
+        Self{elems: [x; N]}
     }
 
     pub fn binop<Binop: Fn(f32, f32) -> f32>(u: Self, v: Self, op: Binop) -> Self {
@@ -97,7 +101,7 @@ impl<const N: usize> VecN<N> {
 
 impl<const N: usize> FromIterator<f32> for VecN<N> {
     fn from_iter<I: IntoIterator<Item=f32>>(iter: I) -> Self {
-        let mut vec = VecN::<N>::new();
+        let mut vec = VecN::<N>::zero();
         let mut index = 0usize;
         for x in iter {
             vec[index] = x;
@@ -291,7 +295,7 @@ macro_rules! mat4 {
 pub(crate) use mat4;
 
 impl Mat4 {
-    pub fn new() -> Self {
+    pub fn zero() -> Self {
         crate::math::Mat4{elems: [0.0; 16]}
     }
 
@@ -355,7 +359,7 @@ impl Mat4 {
 
         let inv_det = 1.0/(b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06);
 
-        let mut result = Mat4::new();
+        let mut result = Mat4::zero();
         result[0][0] = (a11*b11 - a12*b10 + a13*b09)*inv_det;
         result[1][0] = (-a01*b11 + a02*b10 - a03*b09)*inv_det;
         result[2][0] = (a31*b05 - a32*b04 + a33*b03)*inv_det;
@@ -421,7 +425,7 @@ impl Mat4 {
 
 impl FromIterator<f32> for Mat4 {
     fn from_iter<I: IntoIterator<Item=f32>>(iter: I) -> Self {
-        let mut mat = Mat4::new();
+        let mut mat = Mat4::zero();
         let mut index = 0usize;
         for x in iter {
             mat.elems[index] = x;
@@ -475,7 +479,7 @@ impl ops::Mul<Mat4> for f32 {
 impl ops::Mul<Mat4> for Mat4 {
     type Output = Self;
     fn mul(self, m: Self) -> Self {
-        let mut ret = Self::new();
+        let mut ret = Self::zero();
         for col in 0..4 {
             for row in 0..4 {
                 let mut dp: f32 = 0.0;
@@ -492,7 +496,7 @@ impl ops::Mul<Mat4> for Mat4 {
 impl ops::Mul<Vec4> for Mat4 {
     type Output = Vec4;
     fn mul(self, v: Self::Output) -> Self::Output {
-        let mut ret = Self::Output::new();
+        let mut ret = Self::Output::zero();
         for row in 0..4 {
             let mut dp: f32 = 0.0;
             for col in 0..4 {
@@ -679,18 +683,22 @@ pub struct AABB {
 }
 
 impl AABB {
-    pub fn min_max() -> Self {
+    pub fn max_min() -> Self {
         Self {
             min: vec3![f32::MAX, f32::MAX, f32::MAX],
             max: vec3![f32::MIN, f32::MIN, f32::MIN]
         }
     }
 
+    pub fn merge(a: &AABB, b: &AABB) -> AABB {
+        AABB{min: Vec3::min(a.min, b.min), max: Vec3::max(a.max, b.max)}
+    }
+
     pub fn center(&self) -> Vec3 {
         0.5 * (self.min + self.max)
     }
 
-    pub fn size(&self) -> f32 {
+    pub fn max_extent(&self) -> f32 {
         (self.max[0] - self.min[0])
             .max(self.max[1] - self.min[1])
             .max(self.max[2] - self.min[2])
@@ -745,10 +753,6 @@ impl AABB {
         }
         (min, max)
     }
-
-    pub fn containing(a: &AABB, b: &AABB) -> AABB {
-        AABB{min: Vec3::min(a.min, b.min), max: Vec3::max(a.max, b.max)}
-    }
 }
 
 pub struct Plane {
@@ -758,7 +762,7 @@ pub struct Plane {
 
 impl Plane {
     pub fn new() -> Self {
-        Plane {point: Vec3::new(), normal: Vec3::new()}
+        Plane {point: Vec3::zero(), normal: Vec3::zero()}
     }
 
     pub fn signed_dist(plane: &Plane, point: Vec3) -> f32 {
@@ -818,8 +822,8 @@ impl Ray {
 
         let mut inside = true;
         let mut quadrant = [RIGHT; 3];
-        let mut maxt = Vec3::new();
-        let mut cand_plane = Vec3::new();
+        let mut maxt = Vec3::zero();
+        let mut cand_plane = Vec3::zero();
 
         for i in 0..3 {
             if self.origin[i] < aabb.min[i] {
@@ -855,7 +859,7 @@ impl Ray {
         }
 
         if maxt[which_plane] < 0.0 { return None; }
-        let mut ip = Vec3::new();
+        let mut ip = Vec3::zero();
         for i in 0..3 {
             if which_plane != i {
                 ip[i] = self.origin[i] + maxt[which_plane]*self.dir[i];

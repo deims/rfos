@@ -65,18 +65,13 @@ fn compute_tile_size(image_width: i32, image_height: i32) -> (i32, i32) {
 
 impl Raytracer {
     pub fn new(scene: Arc<Scene>, config: RenderConfig) -> Self {
-        if config.raytracer_config.is_none() {
-            log::error!("raytracer config is missing, exiting");
-            std::process::exit(1);
-        }
         let (imgw, imgh) = (config.image_width as i32, config.image_height as i32);
         let (tile_width, tile_height) = compute_tile_size(imgw, imgh);
         let tile_cols = (imgw / tile_width) as usize;
         let tile_rows = (imgh / tile_height) as usize;
         let tile_count = tile_cols * tile_rows;
-        let rtconfig = config.raytracer_config.unwrap();
-        let leafcap = rtconfig.octree_leaf_capacity;
-        let minsize = rtconfig.octree_min_node_size;
+        let leafcap = config.raytracer_config.octree_leaf_capacity;
+        let minsize = config.raytracer_config.octree_min_node_size;
         let octree = Arc::new(Octree::new(scene.clone(), leafcap, minsize));
         let frame = Arc::new(RwLock::new(Texture::new(config.image_width, config.image_height)));
         let tile_queue = Arc::new(Mutex::new(RingBuffer::<Tile>::new(tile_count)));
@@ -134,11 +129,7 @@ impl Raytracer {
         }
         drop(tqlock);
 
-        if self.config.raytracer_config.is_none() {
-            log::error!("raytracer config is missing");
-            return &self.frame;
-        }
-        let worker_count = self.config.raytracer_config.unwrap().worker_count;
+        let worker_count = self.config.raytracer_config.worker_count;
         let mut worker_handles = Vec::<thread::JoinHandle<()>>::new();
         for i in 0..worker_count {
             let id = i;

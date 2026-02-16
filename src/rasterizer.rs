@@ -159,10 +159,6 @@ pub struct Rasterizer {
 
 impl Rasterizer {
     pub fn new(scene: Arc<Scene>, config: RenderConfig) -> Self {
-        if config.rasterizer_config.is_none() {
-            log::error!("rasterizer config is missing, exiting");
-            std::process::exit(1);
-        }
         let (w, h) = (config.image_width, config.image_height);
         Rasterizer {
             scene,
@@ -173,12 +169,12 @@ impl Rasterizer {
             model_index: INVALID_INDEX,
             mesh_index: INVALID_INDEX,
             material_index: INVALID_INDEX,
-            view_matrix: Mat4::new(),
-            proj_matrix: Mat4::new(),
-            view_proj_matrix: Mat4::new(),
-            normal_matrix: Mat4::new(),
-            model_view_matrix: Mat4::new(),
-            model_view_proj_matrix: Mat4::new(),
+            view_matrix: Mat4::zero(),
+            proj_matrix: Mat4::zero(),
+            view_proj_matrix: Mat4::zero(),
+            normal_matrix: Mat4::zero(),
+            model_view_matrix: Mat4::zero(),
+            model_view_proj_matrix: Mat4::zero(),
             color_buffer_width: config.image_width as f32,
             color_buffer_height: config.image_height as f32,
         }
@@ -223,7 +219,7 @@ impl Rasterizer {
         self.zbuffer.fill(1.0);
 
         let (prim_sender, prim_receiver) = bounded(PRIM_QUEUE_CAP);
-        let rasconfig = self.config.rasterizer_config.unwrap();
+        let rasconfig = &self.config.rasterizer_config;
 
         let fragproc_handles: Vec<thread::JoinHandle<FragmentProcessor>> = 
             (0..rasconfig.fragment_processors).map(|_| {
@@ -262,8 +258,8 @@ impl Rasterizer {
                     _ = prim_sender.send(RasterPrimitive::Point(Fragment {
                         world_pos,
                         screen_pos,
-                        normal: Vec3::new(),
-                        uv: Vec3::new(),
+                        normal: Vec3::zero(),
+                        uv: Vec3::zero(),
                         pixel_pos,
                         color: wireframe_color
                     })).unwrap();
@@ -297,10 +293,10 @@ impl Rasterizer {
                     }
 
                     const ONE_THIRD: f32 = 1.0/3.0;
-                    fragtri.centroid.world_pos = Vec3::new();
-                    fragtri.centroid.normal = Vec3::new();
-                    fragtri.centroid.uv = Vec3::new();
-                    fragtri.centroid.screen_pos = Vec4::new();
+                    fragtri.centroid.world_pos = Vec3::zero();
+                    fragtri.centroid.normal = Vec3::zero();
+                    fragtri.centroid.uv = Vec3::zero();
+                    fragtri.centroid.screen_pos = Vec4::zero();
                     for i in 0..3 {
                         let mut frag = fragtri.vertices[i];
                         frag.screen_pos = self.proj_matrix * frag.screen_pos;

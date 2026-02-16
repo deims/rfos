@@ -145,7 +145,7 @@ pub fn compute_aabb(mesh: &Mesh, model_matrix: Mat4) -> AABB {
 }
 
 fn parse_obj_vec<const N: usize>(token_iter: &mut SplitAsciiWhitespace) -> Result<VecN<N>> {
-    let mut v = VecN::<N>::new();
+    let mut v = VecN::<N>::zero();
     let errmsg = "invalid vector";
     for i in 0..N {
         let tok = token_iter.next();

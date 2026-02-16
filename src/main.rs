@@ -28,7 +28,7 @@ fn main() {
         render_mode: RenderMode::Filled,
         shading_model: ShadingModel::Phong,
         background_color: rgb(24, 24, 24),
-        rasterizer_config: Some(RasterizerConfig {
+        rasterizer_config: RasterizerConfig {
             vertex_processors: 1,
             fragment_processors: 1,
             backface_culling: true,
@@ -42,13 +42,13 @@ fn main() {
             vertex_normal_color: GREEN,
             bounding_box_color: CYAN,
             wireframe_color: rgb(200, 200, 200),
-        }),
-        raytracer_config: Some(RaytracerConfig {
+        },
+        raytracer_config: RaytracerConfig {
             worker_count: 24,
             octree_leaf_capacity: 50,
             octree_min_node_size: 1e-3,
             render_octree: false
-        })
+        }
     };
 
     log::info!("creating scene");
@@ -63,12 +63,12 @@ fn main() {
 
     let angle = 0.3 * std::f32::consts::PI;
     let axis = vec3![0.0, 1.0, 0.0];
-    let rot = Mat4::rotation(angle, axis);
-    let base_mm = rot * Mat4::translation(vec3![0.0, -0.05, 0.0]);
-    let box1_mm = rot * Mat4::translation(vec3![0.0, 0.24, -1.1]);
-    let box2_mm = rot * Mat4::translation(vec3![0.0, 0.25, 1.1]);
-    let torus1_mm = Mat4::translation(vec3![0.0, 0.85, 0.0]) * rot;
-    let torus2_mm = Mat4::translation(vec3![0.0, 1.85, 0.0]) * rot;
+    let modelmat = Mat4::rotation(angle, axis);
+    let base_mm = modelmat * Mat4::translation(vec3![0.0, -0.05, 0.0]);
+    let box1_mm = modelmat * Mat4::translation(vec3![0.0, 0.24, -1.1]);
+    let box2_mm = modelmat * Mat4::translation(vec3![0.0, 0.25, 1.1]);
+    let torus1_mm = Mat4::translation(vec3![0.0, 0.85, 0.0]) * modelmat;
+    let torus2_mm = Mat4::translation(vec3![0.0, 1.85, 0.0]) * modelmat;
 
     // _ = scene.create_model(mesh_index, material_index, rot);
     _ = scene.create_model(base_index, material_index, base_mm);
@@ -113,8 +113,7 @@ fn main() {
     } else if args[1] == "ray" {
         log::info!("using raytracing renderer");
         let mut rend = Raytracer::new(scene.clone(), config.clone());
-        let rtconfig = config.raytracer_config.unwrap();
-        if rtconfig.render_octree {
+        if config.raytracer_config.render_octree {
             log::info!("rendering octree to octree.ong");
             _ = rend.octree.render_to_file(config.clone(), camera_index, "octree.png");
         }

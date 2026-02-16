@@ -56,12 +56,12 @@ pub struct Fragment {
 impl Fragment {
     pub fn new() -> Self {
         Fragment{
-            world_pos: Vec3::new(),
-            normal: Vec3::new(),
-            uv: Vec3::new(),
-            screen_pos: Vec4::new(),
-            pixel_pos: Vec2::new(),
-            color: Vec3::new()
+            world_pos: Vec3::zero(),
+            normal: Vec3::zero(),
+            uv: Vec3::zero(),
+            screen_pos: Vec4::zero(),
+            pixel_pos: Vec2::zero(),
+            color: Vec3::zero()
         }
     }
 
@@ -268,7 +268,7 @@ pub struct RenderConfig {
     pub render_mode: RenderMode,
     pub shading_model: ShadingModel,
     pub background_color: Rgba<u8>,
-    pub rasterizer_config: Option<RasterizerConfig>,
-    pub raytracer_config: Option<RaytracerConfig>
+    pub rasterizer_config: RasterizerConfig,
+    pub raytracer_config: RaytracerConfig
 }
 
