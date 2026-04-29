@@ -6,9 +6,7 @@ pub fn lerp(start: f32, end: f32, tmin: f32, tmax: f32, t: f32) -> f32 {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct VecN<const N: usize> {
-    pub elems: [f32; N],
-}
+pub struct VecN<const N: usize>(pub [f32; N]);
 
 pub type Vec2 = VecN<2>;
 pub type Vec3 = VecN<3>;
@@ -16,19 +14,19 @@ pub type Vec4 = VecN<4>;
 
 macro_rules! vec2 {
     [$x:expr, $y:expr] => {
-        crate::math::Vec2{elems: [$x, $y]}
+        crate::math::VecN::<2>([$x, $y])
     }
 }
 
 macro_rules! vec3 {
     [$x:expr, $y:expr, $z:expr] => {
-        crate::math::Vec3{elems: [$x, $y, $z]}
+        crate::math::VecN::<3>([$x, $y, $z])
     }
 }
 
 macro_rules! vec4 {
     [$x:expr, $y:expr, $z:expr, $w:expr] => {
-        crate::math::Vec4{elems: [$x, $y, $z, $w]}
+        crate::math::VecN::<4>([$x, $y, $z, $w])
     }
 }
 
@@ -42,7 +40,7 @@ impl<const N: usize> VecN<N> {
     }
 
     pub fn splat(x: f32) -> Self {
-        Self{elems: [x; N]}
+        Self([x; N])
     }
 
     pub fn binop<Binop: Fn(f32, f32) -> f32>(u: Self, v: Self, op: Binop) -> Self {
@@ -52,10 +50,6 @@ impl<const N: usize> VecN<N> {
     pub fn unop<Unop: Fn(f32) -> f32>(u: Self, op: Unop) -> Self {
         (0..N).map(|i| op(u[i])).collect()
     }
-
-    // pub fn mul(u: Self, v:Self) -> Self {
-    //     VecN::<N>::binop(u, v, |x, y| x*y)
-    // }
 
     pub fn dot(u: Self, v: Self) -> f32 {
         (0..N).map(|i| u[i]*v[i]).sum()
@@ -179,13 +173,13 @@ impl<const N: usize> fmt::Display for VecN<N> {
 impl<const N: usize> ops::Index<usize> for VecN<N> {
     type Output = f32;
     fn index(&self, i: usize) -> &Self::Output {
-        return &self.elems[i];
+        &self.0[i]
     }
 }
 
 impl<const N: usize> ops::IndexMut<usize> for VecN<N> {
     fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        return &mut self.elems[i];
+        &mut self.0[i]
     }
 }
 
@@ -272,23 +266,19 @@ impl<const N: usize> ops::DivAssign<f32> for VecN<N> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Mat4 {
-    pub elems: [f32; 16]
-}
+pub struct Mat4(pub [f32; 16]);
 
 macro_rules! mat4 {
     [$a00:expr, $a01:expr, $a02:expr, $a03:expr,
      $a10:expr, $a11:expr, $a12:expr, $a13:expr,
      $a20:expr, $a21:expr, $a22:expr, $a23:expr,
      $a30:expr, $a31:expr, $a32:expr, $a33:expr] => {
-        crate::math::Mat4{
-            elems: [
-                $a00, $a01, $a02, $a03,
-                $a10, $a11, $a12, $a13,
-                $a20, $a21, $a22, $a23,
-                $a30, $a31, $a32, $a33,
-            ]
-        }
+         crate::math::Mat4([
+             $a00, $a01, $a02, $a03,
+             $a10, $a11, $a12, $a13,
+             $a20, $a21, $a22, $a23,
+             $a30, $a31, $a32, $a33,
+         ])
     }
 }
 
@@ -296,15 +286,15 @@ pub(crate) use mat4;
 
 impl Mat4 {
     pub fn zero() -> Self {
-        crate::math::Mat4{elems: [0.0; 16]}
+        Mat4([0.0; 16])
     }
 
     pub fn binop<Binop: Fn(f32, f32) -> f32>(a: Self, b: Self, op: Binop) -> Self {
-        (0..16).map(|i| op(a.elems[i], b.elems[i])).collect()
+        (0..16).map(|i| op(a.0[i], b.0[i])).collect()
     }
 
     pub fn unop<Unop: Fn(f32) -> f32>(a: Self, op: Unop) -> Self {
-        (0..16).map(|i| op(a.elems[i])).collect()
+        (0..16).map(|i| op(a.0[i])).collect()
     }
 
     pub fn print(m: Self, title: &str) {
@@ -323,7 +313,7 @@ impl Mat4 {
 
     pub fn dist(a: Mat4, b: Mat4) -> f32 {
         let diff = a - b;
-        f32::sqrt((0..16).map(|i| diff.elems[i]*diff.elems[i]).sum())
+        f32::sqrt((0..16).map(|i| diff.0[i]*diff.0[i]).sum())
     }
 
     pub fn transpose(m: Self) -> Self {
@@ -428,7 +418,7 @@ impl FromIterator<f32> for Mat4 {
         let mut mat = Mat4::zero();
         let mut index = 0usize;
         for x in iter {
-            mat.elems[index] = x;
+            mat.0[index] = x;
             index += 1;
         }
         mat
@@ -438,13 +428,13 @@ impl FromIterator<f32> for Mat4 {
 impl ops::Index<usize> for Mat4 {
     type Output = [f32];
     fn index(&self, i: usize) -> &Self::Output {
-        &self.elems[4*i .. (4*i)+4]
+        &self.0[4*i .. (4*i)+4]
     }
 }
 
 impl ops::IndexMut<usize> for Mat4 {
     fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        &mut self.elems[4*i .. (4*i)+4]
+        &mut self.0[4*i .. (4*i)+4]
     }
 }
 
