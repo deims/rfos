@@ -499,7 +499,10 @@ fn phong_shade(
         l /= d;
         let mut nl = Vec3::dot(frag.normal, l);
         let r = 2.0 * nl * (frag.normal - l);
-        let att = f32::min(1.0/(light.attenuation[0] + light.attenuation[1]*d + light.attenuation[2]*d*d), 1.0);
+        let att = f32::min(
+            1.0/(light.attenuation[0] + light.attenuation[1]*d + light.attenuation[2]*d*d),
+            1.0
+        );
         nl = f32::max(nl, 0.0);
         let rv = f32::powf(f32::max(Vec3::dot(r, v), 0.0), material.specular_exp);
         let diffcolor = diffuse_color(scene.clone(), material, ucorr, vcorr);

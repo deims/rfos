@@ -38,8 +38,7 @@ pub fn rgba_to_u32(color: Rgba<u8>) -> u32 {
 }
 
 pub fn rgba_to_vec4(color: Rgba<u8>) -> Vec4 {
-    let (r, g, b, a) = (color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32);
-    vec4![r/255.0, g/255.0, b/255.0, a/255.0]
+    (0..4).map(|i| (color[i] as f32)/255.0).collect()
 }
 
 pub fn rgba_to_vec3(color: Rgba<u8>) -> Vec3 {
@@ -47,12 +46,7 @@ pub fn rgba_to_vec3(color: Rgba<u8>) -> Vec3 {
 }
 
 pub fn rgba_from_vec4(color: Vec4) -> Rgba<u8> {
-    Rgba::<u8>([
-        f32::round(color[0] * 255.0) as u8,
-        f32::round(color[1] * 255.0) as u8,
-        f32::round(color[2] * 255.0) as u8,
-        f32::round(color[3] * 255.0) as u8
-    ])
+    Rgba::<u8>(std::array::from_fn(|i| f32::round(color[i] * 255.0) as u8))
 }
 
 pub fn rgba_from_vec3(color: Vec3) -> Rgba<u8> {
@@ -126,7 +120,7 @@ impl Texture {
         self.set_pixel(x as u32, y as u32, p);
     }
 
-    pub fn save<P>(&self, path: P) -> ImageResult<()>  where P: AsRef<Path> {
+    pub fn save<P>(&self, path: P) -> ImageResult<()> where P: AsRef<Path> {
         self.image.save(path)
     }
 }
