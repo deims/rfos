@@ -93,6 +93,13 @@ impl<const N: usize> VecN<N> {
     }
 }
 
+impl<const N: usize> ops::Deref for VecN<N> {
+    type Target = [f32];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl<const N: usize> FromIterator<f32> for VecN<N> {
     fn from_iter<I: IntoIterator<Item=f32>>(iter: I) -> Self {
         let mut vec = VecN::<N>::zero();

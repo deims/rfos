@@ -31,17 +31,10 @@ pub struct Raytracer {
 }
 
 fn possible_tile_sizes(n: i32) -> Vec<i32> {
-    let limit = f64::ceil(f64::sqrt(n as f64)) as i32;
-    let mut sizes = Vec::<i32>::new();
-    for i in 2..=limit {
-        if n % i == 0 {
-            let size = n/i;
-            if size > 0 {
-                sizes.push(n/i);
-            }
-        }
-    }
-    sizes
+    let limit = i32::isqrt(n);
+    (2..=limit).filter(|&i| n % i == 0)
+        .map(|i| n/i)
+        .collect()
 }
 
 fn compute_tile_size(image_width: i32, image_height: i32) -> (i32, i32) {

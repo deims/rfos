@@ -64,31 +64,38 @@ impl FragmentProcessor {
         self.zbuffer.fill(1.0);
     }
 
+    fn pixel_pos(frag: &Fragment) -> (i32, i32) {
+        let [x, y] = std::array::from_fn(|i| f32::round(frag.pixel_pos[i]) as i32);
+        (x, y)
+    }
+
     fn process_point(&mut self, frag: &Fragment) {
-        let pos = frag.pixel_pos.elems.map(|x| f32::round(x) as i32);
-        let iswithin = self.color_buffer.is_within(pos[0], pos[1]);
+        let (x, y) = Self::pixel_pos(frag);
+        let iswithin = self.color_buffer.is_within(x, y);
         let z = frag.screen_pos[2];
-        if iswithin && z < self.zbuffer.get(pos[0], pos[1]) {
+        if iswithin && z < self.zbuffer.get(x, y) {
             let color = rgba_from_vec3(frag.color);
-            self.color_buffer.set_pixel(pos[0] as u32, pos[1] as u32, color);
-            self.zbuffer.set(pos[0], pos[1], frag.screen_pos[2]);
+            self.color_buffer.set_pixel(x as u32, y as u32, color);
+            self.zbuffer.set(x, y, frag.screen_pos[2]);
         }
     }
 
     fn process_line(&mut self, start: &Fragment, end: &Fragment) {
-        let startpos = start.pixel_pos.elems.map(|x| f32::round(x) as i32);
-        let endpos = end.pixel_pos.elems.map(|x| f32::round(x) as i32);
+        let (startx, starty) = Self::pixel_pos(start);
+        let (endx, endy) = Self::pixel_pos(end);
+        let startpos = (startx, starty);
+        let endpos = (endx, endy);
         let cb = &mut self.color_buffer;
         let zb = &mut self.zbuffer;
         let color = rgba_from_vec3(start.color);
-        if i32::abs(endpos[1] - startpos[1]) < i32::abs(endpos[0] - startpos[0]) {
-            if startpos[0] > endpos[0] {
+        if i32::abs(endy - starty) < i32::abs(endx - startx) {
+            if startx > endx {
                 render_line_low(cb, zb, &end, endpos, &start, startpos, color);
             } else {
                 render_line_low(cb, zb, &start, startpos, &end, endpos, color);
             }
         } else {
-            if startpos[1] > endpos[1] {
+            if starty > endy {
                 render_line_high(cb, zb, &end, endpos, &start, startpos, color);
             } else {
                 render_line_high(cb, zb, &start, startpos, &end, endpos, color);
@@ -407,22 +414,24 @@ impl Rasterizer {
 fn render_line_low(
     color_buffer: &mut Texture,
     zbuffer: &mut DepthBuffer,
-    start: &Fragment, startpos: [i32; 2],
-    end: &Fragment, endpos: [i32; 2],
+    start: &Fragment, startpos: (i32, i32),
+    end: &Fragment, endpos: (i32, i32),
     color: Rgba<u8>)
 {
-    let dx = endpos[0] - startpos[0];
+    let (startx, starty) = startpos;
+    let (endx, endy) = endpos;
+    let dx = endx - startx;
     let dz = (end.screen_pos[2] - start.screen_pos[2]) / (dx as f32);
-    let mut dy = endpos[1] - startpos[1];
+    let mut dy = endy - starty;
     let mut yi = 1i32;
     if dy < 0 {
         yi = -1;
         dy = -dy;
     }
     let mut d = 2*dy - dx;
-    let mut y = startpos[1];
+    let mut y = starty;
     let mut z = start.screen_pos[2];
-    for x in startpos[0]..=endpos[0] {
+    for x in startx..=endx {
         if color_buffer.is_within(x, y) && z < zbuffer.get(x, y) {
             color_buffer.set_pixel(x as u32, y as u32, color);
             zbuffer.set(x, y, z);
@@ -439,22 +448,24 @@ fn render_line_low(
 fn render_line_high(
     color_buffer: &mut Texture,
     zbuffer: &mut DepthBuffer,
-    start: &Fragment, startpos: [i32; 2],
-    end: &Fragment, endpos: [i32; 2],
+    start: &Fragment, startpos: (i32, i32),
+    end: &Fragment, endpos: (i32, i32),
     color: Rgba<u8>)
 {
-    let dy = endpos[1] - startpos[1];
+    let (startx, starty) = startpos;
+    let (endx, endy) = endpos;
+    let dy = endy - starty;
     let dz = (end.screen_pos[2] - start.screen_pos[2]) / (dy as f32);
-    let mut dx = endpos[0] - startpos[0];
+    let mut dx = endx - startx;
     let mut xi = 1i32;
     if dx < 0 {
         xi = -1;
         dx = -dx;
     }
     let mut d = 2*dx - dy;
-    let mut x = startpos[0];
+    let mut x = startx;
     let mut z = start.screen_pos[2];
-    for y in startpos[1]..=endpos[1] {
+    for y in starty..=endy {
         if color_buffer.is_within(x, y) && z < zbuffer.get(x, y) {
             color_buffer.set_pixel(x as u32, y as u32, color);
             zbuffer.set(x, y, z);
